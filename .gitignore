@@ -1,0 +1,20 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+overnight
+
+# Bun
+bun.lockb
+
+# OS
+.DS_Store
+
+# overnight state files
+.overnight-state.json
+
+# IDE
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,48 @@
+export interface JobConfig {
+  prompt: string;
+  working_dir?: string;
+  timeout_seconds?: number;
+  stall_timeout_seconds?: number;
+  verify?: boolean;
+  verify_prompt?: string;
+  allowed_tools?: string[];
+  retry_count?: number;
+  retry_delay?: number;
+}
+
+export interface JobResult {
+  task: string;
+  status: "success" | "failed" | "timeout" | "stalled" | "verification_failed";
+  result?: string;
+  error?: string;
+  duration_seconds: number;
+  verified: boolean;
+  retries: number;
+}
+
+export interface RunState {
+  completed_indices: number[];
+  results: JobResult[];
+  timestamp: string;
+  total_jobs: number;
+}
+
+export interface TasksFile {
+  defaults?: {
+    timeout_seconds?: number;
+    stall_timeout_seconds?: number;
+    verify?: boolean;
+    verify_prompt?: string;
+    allowed_tools?: string[];
+  };
+  tasks: (string | JobConfig)[];
+}
+
+export const DEFAULT_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep"];
+export const DEFAULT_TIMEOUT = 300;
+export const DEFAULT_STALL_TIMEOUT = 120;
+export const DEFAULT_RETRY_COUNT = 3;
+export const DEFAULT_RETRY_DELAY = 5;
+export const DEFAULT_VERIFY_PROMPT = "Verify this is complete and correct. If there are issues, list them.";
+export const DEFAULT_STATE_FILE = ".overnight-state.json";
+export const DEFAULT_NTFY_TOPIC = "overnight";
