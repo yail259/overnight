@@ -126,10 +126,25 @@ export async function runJob(
   let retriesUsed = 0;
 
   const logMsg = (msg: string) => log?.(msg);
-  logMsg(`Starting: ${config.prompt.slice(0, 60)}...`);
 
   // Find claude executable once at start
   const claudePath = findClaudeExecutable();
+  if (!claudePath) {
+    logMsg("\x1b[31mError: Could not find 'claude' CLI.\x1b[0m");
+    logMsg("\x1b[33mInstall it with:\x1b[0m");
+    logMsg("  curl -fsSL https://claude.ai/install.sh | bash");
+    logMsg("\x1b[33mOr set CLAUDE_CODE_PATH environment variable.\x1b[0m");
+    return {
+      task: config.prompt,
+      status: "failed",
+      error: "Claude CLI not found. Install with: curl -fsSL https://claude.ai/install.sh | bash",
+      duration_seconds: 0,
+      verified: false,
+      retries: 0,
+    };
+  }
+
+  logMsg(`Starting: ${config.prompt.slice(0, 60)}...`);
 
   for (let attempt = 0; attempt <= retryCount; attempt++) {
     try {
