@@ -144,6 +144,9 @@ export async function runJob(
     };
   }
 
+  if (process.env.OVERNIGHT_DEBUG) {
+    logMsg(`\x1b[2mDebug: Claude path = ${claudePath}\x1b[0m`);
+  }
   logMsg(`Starting: ${config.prompt.slice(0, 60)}...`);
 
   for (let attempt = 0; attempt <= retryCount; attempt++) {
@@ -203,6 +206,7 @@ export async function runJob(
         const verifyOptions: ClaudeCodeOptions = {
           resume: sessionId,
           permissionMode: "acceptEdits",
+          ...(claudePath && { pathToClaudeCodeExecutable: claudePath }),
         };
 
         try {
