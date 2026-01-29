@@ -28,8 +28,16 @@ export interface JobResult {
   retries: number;
 }
 
+export interface InProgressTask {
+  hash: string;
+  prompt: string;
+  sessionId?: string;  // SDK session ID for resumption
+  startedAt: string;
+}
+
 export interface RunState {
   completed: Record<string, JobResult>; // keyed by task hash
+  inProgress?: InProgressTask;          // currently running task
   timestamp: string;
 }
 

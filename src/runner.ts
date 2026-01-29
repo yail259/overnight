@@ -173,7 +173,8 @@ function getToolDetail(toolName: string, toolInput: Record<string, unknown>): st
 async function collectResultWithProgress(
   prompt: string,
   options: ClaudeCodeOptions,
-  progress: ProgressDisplay
+  progress: ProgressDisplay,
+  onSessionId?: (sessionId: string) => void
 ): Promise<{ sessionId?: string; result?: string; error?: string }> {
   let sessionId: string | undefined;
   let result: string | undefined;
@@ -210,6 +211,9 @@ async function collectResultWithProgress(
         // System messages
         if (message.subtype === "init") {
           sessionId = message.session_id;
+          if (sessionId && onSessionId) {
+            onSessionId(sessionId);
+          }
         }
       }
     }
@@ -223,7 +227,11 @@ async function collectResultWithProgress(
 
 export async function runJob(
   config: JobConfig,
-  log?: LogCallback
+  log?: LogCallback,
+  options?: {
+    resumeSessionId?: string;        // Resume from a previous session
+    onSessionId?: (id: string) => void;  // Called when session ID is available
+  }
 ): Promise<JobResult> {
   const startTime = Date.now();
   const tools = config.allowed_tools ?? DEFAULT_TOOLS;
@@ -232,6 +240,7 @@ export async function runJob(
   const retryDelay = config.retry_delay ?? DEFAULT_RETRY_DELAY;
   const verifyPrompt = config.verify_prompt ?? DEFAULT_VERIFY_PROMPT;
   let retriesUsed = 0;
+  let resumeSessionId = options?.resumeSessionId;
 
   const logMsg = (msg: string) => log?.(msg);
   const progress = new ProgressDisplay();
@@ -259,31 +268,44 @@ export async function runJob(
 
   // Show task being started
   const taskPreview = config.prompt.slice(0, 60) + (config.prompt.length > 60 ? "..." : "");
-  logMsg(`\x1b[36m▶\x1b[0m ${taskPreview}`);
+  if (resumeSessionId) {
+    logMsg(`\x1b[36m▶\x1b[0m Resuming: ${taskPreview}`);
+  } else {
+    logMsg(`\x1b[36m▶\x1b[0m ${taskPreview}`);
+  }
 
   for (let attempt = 0; attempt <= retryCount; attempt++) {
     try {
       // Build security hooks if security config provided
       const securityHooks = config.security ? createSecurityHooks(config.security) : undefined;
 
-      const options: ClaudeCodeOptions = {
+      const sdkOptions: ClaudeCodeOptions = {
         allowedTools: tools,
         permissionMode: "acceptEdits",
         ...(claudePath && { pathToClaudeCodeExecutable: claudePath }),
         ...(config.working_dir && { cwd: config.working_dir }),
         ...(config.security?.max_turns && { maxTurns: config.security.max_turns }),
         ...(securityHooks && { hooks: securityHooks }),
+        ...(resumeSessionId && { resume: resumeSessionId }),
       };
 
       let sessionId: string | undefined;
       let result: string | undefined;
 
+      // Prompt: if resuming, ask to continue; otherwise use original prompt
+      const prompt = resumeSessionId
+        ? "Continue where you left off. Complete the original task."
+        : config.prompt;
+
       // Start progress display
-      progress.start("Working");
+      progress.start(resumeSessionId ? "Resuming" : "Working");
 
       try {
         const collected = await runWithTimeout(
-          collectResultWithProgress(config.prompt, options, progress),
+          collectResultWithProgress(prompt, sdkOptions, progress, (id) => {
+            sessionId = id;
+            options?.onSessionId?.(id);
+          }),
           timeout
         );
         sessionId = collected.sessionId;
@@ -294,6 +316,10 @@ export async function runJob(
         if ((e as Error).message === "TIMEOUT") {
           if (attempt < retryCount) {
             retriesUsed = attempt + 1;
+            // On timeout, if we have a session ID, use it for the retry
+            if (sessionId) {
+              resumeSessionId = sessionId;
+            }
             const delay = retryDelay * Math.pow(2, attempt);
             logMsg(
               `\x1b[33m⚠ Timeout after ${config.timeout_seconds ?? DEFAULT_TIMEOUT}s, retrying in ${delay}s (${attempt + 1}/${retryCount})\x1b[0m`
@@ -377,6 +403,10 @@ export async function runJob(
       const error = e as Error;
       if (isRetryableError(error) && attempt < retryCount) {
         retriesUsed = attempt + 1;
+        // Preserve session for resumption on retry
+        if (sessionId) {
+          resumeSessionId = sessionId;
+        }
         const delay = retryDelay * Math.pow(2, attempt);
         logMsg(
           `\x1b[33m⚠ ${error.message}, retrying in ${delay}s (${attempt + 1}/${retryCount})\x1b[0m`
@@ -459,10 +489,31 @@ export async function runJobsWithState(
     const totalDone = Object.keys(state.completed).length;
     options.log?.(`\n\x1b[1m[${totalDone + 1}/${totalDone + totalPending}]\x1b[0m`);
 
-    const result = await runJob(config, options.log);
+    // Check if this task was previously in-progress (crashed mid-task)
+    const resumeSessionId = (state.inProgress?.hash === hash)
+      ? state.inProgress.sessionId
+      : undefined;
 
-    // Save to state immediately
+    if (resumeSessionId) {
+      options.log?.(`\x1b[2mResuming session ${resumeSessionId.slice(0, 8)}...\x1b[0m`);
+    }
+
+    // Mark task as in-progress before starting
+    state.inProgress = { hash, prompt: config.prompt, startedAt: new Date().toISOString() };
+    saveState(state, stateFile);
+
+    const result = await runJob(config, options.log, {
+      resumeSessionId,
+      onSessionId: (id) => {
+        // Checkpoint the session ID so we can resume on crash
+        state.inProgress = { hash, prompt: config.prompt, sessionId: id, startedAt: state.inProgress!.startedAt };
+        saveState(state, stateFile);
+      },
+    });
+
+    // Task done — save result and clear in-progress
     state.completed[hash] = result;
+    state.inProgress = undefined;
     state.timestamp = new Date().toISOString();
     saveState(state, stateFile);
 
