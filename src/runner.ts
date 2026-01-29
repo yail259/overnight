@@ -1,6 +1,7 @@
 import { query, type Options as ClaudeCodeOptions } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
 import { execSync } from "child_process";
+import { createHash } from "crypto";
 import {
   type JobConfig,
   type JobResult,
@@ -408,6 +409,10 @@ export async function runJob(
   };
 }
 
+export function taskHash(prompt: string): string {
+  return createHash("sha256").update(prompt).digest("hex").slice(0, 12);
+}
+
 export function saveState(state: RunState, stateFile: string): void {
   writeFileSync(stateFile, JSON.stringify(state, null, 2));
 }
@@ -426,38 +431,61 @@ export async function runJobsWithState(
   options: {
     stateFile?: string;
     log?: LogCallback;
-    startIndex?: number;
-    priorResults?: JobResult[];
+    reloadConfigs?: () => JobConfig[];  // Called between jobs to pick up new tasks
   } = {}
 ): Promise<JobResult[]> {
   const stateFile = options.stateFile ?? DEFAULT_STATE_FILE;
-  const results: JobResult[] = options.priorResults
-    ? [...options.priorResults]
-    : [];
-  const startIndex = options.startIndex ?? 0;
 
-  for (let i = 0; i < configs.length; i++) {
-    if (i < startIndex) continue;
+  // Load existing state or start fresh
+  const state: RunState = loadState(stateFile) ?? {
+    completed: {},
+    timestamp: new Date().toISOString(),
+  };
 
-    options.log?.(`\n\x1b[1m[${i + 1}/${configs.length}]\x1b[0m`);
+  let currentConfigs = configs;
+  let jobNum = 0;
 
-    const result = await runJob(configs[i], options.log);
-    results.push(result);
+  while (true) {
+    // Find next task that hasn't been completed
+    const pending = currentConfigs.filter(c => !(taskHash(c.prompt) in state.completed));
 
-    // Save state after each job
-    const state: RunState = {
-      completed_indices: Array.from({ length: results.length }, (_, i) => i),
-      results,
-      timestamp: new Date().toISOString(),
-      total_jobs: configs.length,
-    };
+    if (pending.length === 0) break;
+
+    const config = pending[0];
+    const hash = taskHash(config.prompt);
+    jobNum++;
+
+    const totalPending = pending.length;
+    const totalDone = Object.keys(state.completed).length;
+    options.log?.(`\n\x1b[1m[${totalDone + 1}/${totalDone + totalPending}]\x1b[0m`);
+
+    const result = await runJob(config, options.log);
+
+    // Save to state immediately
+    state.completed[hash] = result;
+    state.timestamp = new Date().toISOString();
     saveState(state, stateFile);
 
+    // Re-read YAML to pick up new tasks added while running
+    if (options.reloadConfigs) {
+      try {
+        currentConfigs = options.reloadConfigs();
+      } catch {
+        // If reload fails (e.g. YAML syntax error mid-edit), keep current list
+      }
+    }
+
     // Brief pause between jobs
-    if (i < configs.length - 1) {
+    const nextPending = currentConfigs.filter(c => !(taskHash(c.prompt) in state.completed));
+    if (nextPending.length > 0) {
       await sleep(1000);
     }
   }
+
+  // Collect results in original order
+  const results = currentConfigs
+    .map(c => state.completed[taskHash(c.prompt)])
+    .filter((r): r is JobResult => r !== undefined);
 
   // Clean up state file on completion
   clearState(stateFile);

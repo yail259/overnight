@@ -21,6 +21,7 @@ import {
   runJobsWithState,
   loadState,
   resultsToJson,
+  taskHash,
 } from "./runner.js";
 import { sendNtfyNotification } from "./notify.js";
 import { generateReport } from "./report.js";
@@ -262,7 +263,16 @@ program
       process.exit(1);
     }
 
-    console.log(`\x1b[1movernight: Running ${configs.length} jobs...\x1b[0m`);
+    // Check if resuming from existing state
+    const existingState = loadState(opts.stateFile ?? DEFAULT_STATE_FILE);
+    if (existingState) {
+      const done = Object.keys(existingState.completed).length;
+      const pending = configs.filter(c => !(taskHash(c.prompt) in existingState.completed)).length;
+      console.log(`\x1b[1movernight: Resuming — ${done} done, ${pending} remaining\x1b[0m`);
+      console.log(`\x1b[2mLast checkpoint: ${existingState.timestamp}\x1b[0m`);
+    } else {
+      console.log(`\x1b[1movernight: Running ${configs.length} jobs...\x1b[0m`);
+    }
 
     // Show security config if enabled
     if (security && !opts.quiet) {
@@ -274,9 +284,12 @@ program
     const log = opts.quiet ? undefined : (msg: string) => console.log(msg);
     const startTime = Date.now();
 
+    const reloadConfigs = () => parseTasksFile(tasksFile, cliSecurity).configs;
+
     const results = await runJobsWithState(configs, {
       stateFile: opts.stateFile,
       log,
+      reloadConfigs,
     });
 
     const totalDuration = (Date.now() - startTime) / 1000;
@@ -351,33 +364,34 @@ program
           ...(opts.auditLog && { audit_log: opts.auditLog }),
         };
 
-    const { configs } = parseTasksFile(tasksFile, cliSecurity);
+    const { configs, security } = parseTasksFile(tasksFile, cliSecurity);
     if (configs.length === 0) {
       console.error("No tasks found in file");
       process.exit(1);
     }
 
-    if (configs.length !== state.total_jobs) {
-      console.error(
-        `Task file has ${configs.length} jobs but state has ${state.total_jobs}`
-      );
-      process.exit(1);
-    }
-
-    const startIndex = state.completed_indices.length;
+    const completedCount = Object.keys(state.completed).length;
+    const pendingCount = configs.filter(c => !(taskHash(c.prompt) in state.completed)).length;
     console.log(
-      `\x1b[1movernight: Resuming from job ${startIndex + 1}/${configs.length}...\x1b[0m`
+      `\x1b[1movernight: Resuming — ${completedCount} done, ${pendingCount} remaining\x1b[0m`
     );
-    console.log(`\x1b[2mLast checkpoint: ${state.timestamp}\x1b[0m\n`);
+    console.log(`\x1b[2mLast checkpoint: ${state.timestamp}\x1b[0m`);
+
+    // Show security config if enabled
+    if (security && !opts.quiet) {
+      console.log("\x1b[2mSecurity:\x1b[0m");
+      validateSecurityConfig(security);
+    }
+    console.log("");
 
     const log = opts.quiet ? undefined : (msg: string) => console.log(msg);
     const startTime = Date.now();
+    const reloadConfigs = () => parseTasksFile(tasksFile, cliSecurity).configs;
 
     const results = await runJobsWithState(configs, {
       stateFile,
       log,
-      startIndex,
-      priorResults: state.results,
+      reloadConfigs,
     });
 
     const totalDuration = (Date.now() - startTime) / 1000;

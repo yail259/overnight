@@ -29,10 +29,8 @@ export interface JobResult {
 }
 
 export interface RunState {
-  completed_indices: number[];
-  results: JobResult[];
+  completed: Record<string, JobResult>; // keyed by task hash
   timestamp: string;
-  total_jobs: number;
 }
 
 export interface TasksFile {
