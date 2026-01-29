@@ -1,10 +1,20 @@
 {
-  "name": "overnight",
-  "version": "0.1.0",
+  "name": "@yail259/overnight",
+  "version": "0.2.0",
   "description": "Batch job runner for Claude Code - queue tasks, run overnight, wake up to results",
   "type": "module",
   "bin": {
     "overnight": "./dist/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yail259/overnight.git"
+  },
+  "keywords": ["claude", "claude-code", "batch", "jobs", "automation", "ai"],
+  "author": "yail259",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "bun build src/cli.ts --outdir dist --target node",

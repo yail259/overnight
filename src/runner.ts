@@ -10,7 +10,9 @@ import {
   DEFAULT_RETRY_DELAY,
   DEFAULT_VERIFY_PROMPT,
   DEFAULT_STATE_FILE,
+  DEFAULT_MAX_TURNS,
 } from "./types.js";
+import { createSecurityHooks } from "./security.js";
 
 type LogCallback = (msg: string) => void;
 
@@ -90,10 +92,15 @@ export async function runJob(
 
   for (let attempt = 0; attempt <= retryCount; attempt++) {
     try {
+      // Build security hooks if security config provided
+      const securityHooks = config.security ? createSecurityHooks(config.security) : undefined;
+
       const options: ClaudeCodeOptions = {
         allowedTools: tools,
         permissionMode: "acceptEdits",
         ...(config.working_dir && { cwd: config.working_dir }),
+        ...(config.security?.max_turns && { maxTurns: config.security.max_turns }),
+        ...(securityHooks && { hooks: securityHooks }),
       };
 
       let sessionId: string | undefined;

@@ -9,7 +9,7 @@ Batch job runner for Claude Code. Queue tasks, run them unattended, get results.
 - **Push Notifications** - `--notify` sends completion summary to ntfy.sh (free, no signup).
 - **Markdown Reports** - `-r report.md` generates a summary with status and next steps.
 - **Verification Loops** - Optionally runs a verification prompt after each task.
-- **Secure by Default** - No Bash access by default. Whitelist tools per-task.
+- **Security Sandboxing** - Path sandboxing, deny patterns for sensitive files, max turns limit, audit logging.
 
 ## Installation
 
@@ -84,6 +84,10 @@ tasks:
 | `--notify` | Send push notification via ntfy.sh |
 | `--notify-topic <topic>` | ntfy.sh topic (default: overnight) |
 | `-q, --quiet` | Minimal output |
+| `--sandbox <dir>` | Restrict file access to directory |
+| `--max-turns <n>` | Max agent iterations (default: 100) |
+| `--audit-log <file>` | Log all file operations |
+| `--no-security` | Disable default deny patterns |
 
 ### `overnight single`
 
@@ -92,6 +96,9 @@ tasks:
 | `-t, --timeout <secs>` | Timeout in seconds (default: 300) |
 | `--verify/--no-verify` | Run verification pass (default: true) |
 | `-T, --tools <tool...>` | Allowed tools (can specify multiple) |
+| `--sandbox <dir>` | Restrict file access to directory |
+| `--max-turns <n>` | Max agent iterations (default: 100) |
+| `--no-security` | Disable default deny patterns |
 
 ## Example Workflows
 
@@ -154,24 +161,74 @@ The state file is automatically deleted on successful completion.
 
 ## Security
 
-By default, overnight only allows safe file operations:
-- `Read` - Read files
-- `Edit` - Edit files
-- `Write` - Write files
-- `Glob` - Find files by pattern
-- `Grep` - Search file contents
+overnight includes multiple layers of security to prevent rogue agents:
 
-**No Bash access by default.** To enable Bash for specific tasks:
+### Tool Whitelisting
+
+By default, only safe file operations are allowed (no Bash):
+- `Read`, `Edit`, `Write`, `Glob`, `Grep`
+
+### Deny Patterns (Enabled by Default)
+
+Sensitive files are automatically blocked:
+- `.env`, `.env.*` - Environment secrets
+- `.git/config` - Git credentials
+- `*.key`, `*.pem`, `*.p12` - Private keys
+- `id_rsa*`, `id_ed25519*` - SSH keys
+- `.ssh/*`, `.aws/*` - Cloud credentials
+- `.npmrc`, `.netrc` - Auth tokens
+
+### Path Sandboxing
+
+Restrict agent to a specific directory:
+
+```bash
+overnight run tasks.yaml --sandbox ./src
+```
+
+Or in tasks.yaml:
+```yaml
+defaults:
+  security:
+    sandbox_dir: "./src"
+```
+
+### Max Turns Limit
+
+Prevent runaway agents with iteration limits:
+
+```bash
+overnight run tasks.yaml --max-turns 50
+```
+
+### Audit Logging
+
+Log all file operations:
+
+```bash
+overnight run tasks.yaml --audit-log overnight-audit.log
+```
+
+### Full Security Config Example
 
 ```yaml
-tasks:
-  - prompt: "Run tests and fix failures"
-    allowed_tools:
-      - Read
-      - Edit
-      - Bash
-      - Glob
-      - Grep
+defaults:
+  security:
+    sandbox_dir: "."
+    max_turns: 100
+    audit_log: "overnight-audit.log"
+    deny_patterns:
+      - "**/.env*"
+      - "**/*.key"
+      - "**/secrets.*"
+```
+
+### Disabling Security
+
+To run without deny patterns (not recommended):
+
+```bash
+overnight run tasks.yaml --no-security
 ```
 
 ## Exit Codes

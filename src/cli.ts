@@ -6,12 +6,16 @@ import {
   type JobConfig,
   type JobResult,
   type TasksFile,
+  type SecurityConfig,
   DEFAULT_TIMEOUT,
   DEFAULT_STALL_TIMEOUT,
   DEFAULT_VERIFY_PROMPT,
   DEFAULT_STATE_FILE,
   DEFAULT_NTFY_TOPIC,
+  DEFAULT_MAX_TURNS,
+  DEFAULT_DENY_PATTERNS,
 } from "./types.js";
+import { validateSecurityConfig } from "./security.js";
 import {
   runJob,
   runJobsWithState,
@@ -120,14 +124,30 @@ overnight resume tasks.yaml
 Run \`overnight <command> --help\` for command-specific options.
 `;
 
-function parseTasksFile(path: string): JobConfig[] {
+interface ParsedConfig {
+  configs: JobConfig[];
+  security?: SecurityConfig;
+}
+
+function parseTasksFile(path: string, cliSecurity?: Partial<SecurityConfig>): ParsedConfig {
   const content = readFileSync(path, "utf-8");
   const data = parseYaml(content) as TasksFile | (string | JobConfig)[];
 
   const tasks = Array.isArray(data) ? data : data.tasks ?? [];
   const defaults = Array.isArray(data) ? {} : data.defaults ?? {};
 
-  return tasks.map((task) => {
+  // Merge CLI security options with file security options (CLI takes precedence)
+  const fileSecurity = (!Array.isArray(data) && data.defaults?.security) || {};
+  const security: SecurityConfig | undefined = (cliSecurity || Object.keys(fileSecurity).length > 0)
+    ? {
+        ...fileSecurity,
+        ...cliSecurity,
+        // Use default deny patterns if none specified
+        deny_patterns: cliSecurity?.deny_patterns ?? fileSecurity.deny_patterns ?? DEFAULT_DENY_PATTERNS,
+      }
+    : undefined;
+
+  const configs = tasks.map((task) => {
     if (typeof task === "string") {
       return {
         prompt: task,
@@ -137,6 +157,7 @@ function parseTasksFile(path: string): JobConfig[] {
         verify: defaults.verify ?? true,
         verify_prompt: defaults.verify_prompt ?? DEFAULT_VERIFY_PROMPT,
         allowed_tools: defaults.allowed_tools,
+        security,
       };
     }
     return {
@@ -152,8 +173,11 @@ function parseTasksFile(path: string): JobConfig[] {
       verify_prompt:
         task.verify_prompt ?? defaults.verify_prompt ?? DEFAULT_VERIFY_PROMPT,
       allowed_tools: task.allowed_tools ?? defaults.allowed_tools,
+      security: task.security ?? security,
     };
   });
+
+  return { configs, security };
 }
 
 function printSummary(results: JobResult[]): void {
@@ -190,7 +214,7 @@ const program = new Command();
 program
   .name("overnight")
   .description("Batch job runner for Claude Code")
-  .version("0.1.0")
+  .version("0.2.0")
   .action(() => {
     console.log(AGENT_HELP);
   });
@@ -205,19 +229,39 @@ program
   .option("--notify", "Send push notification via ntfy.sh")
   .option("--notify-topic <topic>", "ntfy.sh topic", DEFAULT_NTFY_TOPIC)
   .option("-r, --report <file>", "Generate markdown report")
+  .option("--sandbox <dir>", "Sandbox directory (restrict file access)")
+  .option("--max-turns <n>", "Max agent iterations per task", String(DEFAULT_MAX_TURNS))
+  .option("--audit-log <file>", "Audit log file path")
+  .option("--no-security", "Disable default security (deny patterns)")
   .action(async (tasksFile, opts) => {
     if (!existsSync(tasksFile)) {
       console.error(`Error: File not found: ${tasksFile}`);
       process.exit(1);
     }
 
-    const configs = parseTasksFile(tasksFile);
+    // Build CLI security config
+    const cliSecurity: Partial<SecurityConfig> | undefined = opts.security === false
+      ? undefined
+      : {
+          ...(opts.sandbox && { sandbox_dir: opts.sandbox }),
+          ...(opts.maxTurns && { max_turns: parseInt(opts.maxTurns, 10) }),
+          ...(opts.auditLog && { audit_log: opts.auditLog }),
+        };
+
+    const { configs, security } = parseTasksFile(tasksFile, cliSecurity);
     if (configs.length === 0) {
       console.error("No tasks found in file");
       process.exit(1);
     }
 
-    console.log(`\x1b[1movernight: Running ${configs.length} jobs...\x1b[0m\n`);
+    console.log(`\x1b[1movernight: Running ${configs.length} jobs...\x1b[0m`);
+
+    // Show security config if enabled
+    if (security && !opts.quiet) {
+      console.log("\x1b[2mSecurity:\x1b[0m");
+      validateSecurityConfig(security);
+    }
+    console.log("");
 
     const log = opts.quiet ? undefined : (msg: string) => console.log(msg);
     const startTime = Date.now();
@@ -271,6 +315,10 @@ program
   .option("--notify", "Send push notification via ntfy.sh")
   .option("--notify-topic <topic>", "ntfy.sh topic", DEFAULT_NTFY_TOPIC)
   .option("-r, --report <file>", "Generate markdown report")
+  .option("--sandbox <dir>", "Sandbox directory (restrict file access)")
+  .option("--max-turns <n>", "Max agent iterations per task", String(DEFAULT_MAX_TURNS))
+  .option("--audit-log <file>", "Audit log file path")
+  .option("--no-security", "Disable default security (deny patterns)")
   .action(async (tasksFile, opts) => {
     const stateFile = opts.stateFile ?? DEFAULT_STATE_FILE;
     const state = loadState(stateFile);
@@ -286,7 +334,16 @@ program
       process.exit(1);
     }
 
-    const configs = parseTasksFile(tasksFile);
+    // Build CLI security config
+    const cliSecurity: Partial<SecurityConfig> | undefined = opts.security === false
+      ? undefined
+      : {
+          ...(opts.sandbox && { sandbox_dir: opts.sandbox }),
+          ...(opts.maxTurns && { max_turns: parseInt(opts.maxTurns, 10) }),
+          ...(opts.auditLog && { audit_log: opts.auditLog }),
+        };
+
+    const { configs } = parseTasksFile(tasksFile, cliSecurity);
     if (configs.length === 0) {
       console.error("No tasks found in file");
       process.exit(1);
@@ -357,12 +414,25 @@ program
   .option("--verify", "Run verification pass", true)
   .option("--no-verify", "Skip verification pass")
   .option("-T, --tools <tool...>", "Allowed tools")
+  .option("--sandbox <dir>", "Sandbox directory (restrict file access)")
+  .option("--max-turns <n>", "Max agent iterations", String(DEFAULT_MAX_TURNS))
+  .option("--no-security", "Disable default security (deny patterns)")
   .action(async (prompt, opts) => {
+    // Build security config
+    const security: SecurityConfig | undefined = opts.security === false
+      ? undefined
+      : {
+          ...(opts.sandbox && { sandbox_dir: opts.sandbox }),
+          ...(opts.maxTurns && { max_turns: parseInt(opts.maxTurns, 10) }),
+          deny_patterns: DEFAULT_DENY_PATTERNS,
+        };
+
     const config: JobConfig = {
       prompt,
       timeout_seconds: parseInt(opts.timeout, 10),
       verify: opts.verify,
       allowed_tools: opts.tools,
+      security,
     };
 
     const log = (msg: string) => console.log(msg);
@@ -392,6 +462,7 @@ program
 defaults:
   timeout_seconds: 300  # 5 minutes per task
   verify: true          # Run verification after each task
+
   # Secure defaults - no Bash, just file operations
   allowed_tools:
     - Read
@@ -399,6 +470,15 @@ defaults:
     - Write
     - Glob
     - Grep
+
+  # Security settings (optional - deny_patterns enabled by default)
+  security:
+    sandbox_dir: "."      # Restrict to current directory
+    max_turns: 100        # Prevent runaway agents
+    # audit_log: "overnight-audit.log"  # Uncomment to enable
+    # deny_patterns:       # Default patterns block .env, .key, .pem, etc.
+    #   - "**/.env*"
+    #   - "**/*.key"
 
 tasks:
   # Simple string format

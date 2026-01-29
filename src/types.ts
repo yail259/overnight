@@ -1,3 +1,10 @@
+export interface SecurityConfig {
+  sandbox_dir?: string;        // All paths must be under this directory
+  deny_patterns?: string[];    // Block files matching these glob patterns
+  max_turns?: number;          // Max agent iterations (prevents runaway)
+  audit_log?: string;          // Path to audit log file
+}
+
 export interface JobConfig {
   prompt: string;
   working_dir?: string;
@@ -8,6 +15,7 @@ export interface JobConfig {
   allowed_tools?: string[];
   retry_count?: number;
   retry_delay?: number;
+  security?: SecurityConfig;
 }
 
 export interface JobResult {
@@ -34,6 +42,7 @@ export interface TasksFile {
     verify?: boolean;
     verify_prompt?: string;
     allowed_tools?: string[];
+    security?: SecurityConfig;
   };
   tasks: (string | JobConfig)[];
 }
@@ -46,3 +55,19 @@ export const DEFAULT_RETRY_DELAY = 5;
 export const DEFAULT_VERIFY_PROMPT = "Verify this is complete and correct. If there are issues, list them.";
 export const DEFAULT_STATE_FILE = ".overnight-state.json";
 export const DEFAULT_NTFY_TOPIC = "overnight";
+export const DEFAULT_MAX_TURNS = 100;
+export const DEFAULT_DENY_PATTERNS = [
+  "**/.env",
+  "**/.env.*",
+  "**/.git/config",
+  "**/credentials*",
+  "**/*.key",
+  "**/*.pem",
+  "**/*.p12",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/.ssh/*",
+  "**/.aws/*",
+  "**/.npmrc",
+  "**/.netrc",
+];
