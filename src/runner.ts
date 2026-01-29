@@ -1,5 +1,6 @@
 import { query, type Options as ClaudeCodeOptions } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { execSync } from "child_process";
 import {
   type JobConfig,
   type JobResult,
@@ -15,6 +16,43 @@ import {
 import { createSecurityHooks } from "./security.js";
 
 type LogCallback = (msg: string) => void;
+
+// Cache the claude executable path
+let claudeExecutablePath: string | undefined;
+
+function findClaudeExecutable(): string | undefined {
+  if (claudeExecutablePath !== undefined) return claudeExecutablePath;
+
+  // Check environment variable first
+  if (process.env.CLAUDE_CODE_PATH) {
+    claudeExecutablePath = process.env.CLAUDE_CODE_PATH;
+    return claudeExecutablePath;
+  }
+
+  // Try to find claude using which/where
+  try {
+    const cmd = process.platform === "win32" ? "where claude" : "which claude";
+    claudeExecutablePath = execSync(cmd, { encoding: "utf-8" }).trim().split("\n")[0];
+    return claudeExecutablePath;
+  } catch {
+    // Fall back to common locations
+    const commonPaths = [
+      "/usr/local/bin/claude",
+      "/opt/homebrew/bin/claude",
+      `${process.env.HOME}/.local/bin/claude`,
+      `${process.env.HOME}/.nvm/versions/node/v22.12.0/bin/claude`,
+    ];
+
+    for (const p of commonPaths) {
+      if (existsSync(p)) {
+        claudeExecutablePath = p;
+        return claudeExecutablePath;
+      }
+    }
+  }
+
+  return undefined;
+}
 
 function isRetryableError(error: Error): boolean {
   const errorStr = error.message.toLowerCase();
@@ -90,6 +128,9 @@ export async function runJob(
   const logMsg = (msg: string) => log?.(msg);
   logMsg(`Starting: ${config.prompt.slice(0, 60)}...`);
 
+  // Find claude executable once at start
+  const claudePath = findClaudeExecutable();
+
   for (let attempt = 0; attempt <= retryCount; attempt++) {
     try {
       // Build security hooks if security config provided
@@ -98,6 +139,7 @@ export async function runJob(
       const options: ClaudeCodeOptions = {
         allowedTools: tools,
         permissionMode: "acceptEdits",
+        ...(claudePath && { pathToClaudeCodeExecutable: claudePath }),
         ...(config.working_dir && { cwd: config.working_dir }),
         ...(config.security?.max_turns && { maxTurns: config.security.max_turns }),
         ...(securityHooks && { hooks: securityHooks }),
