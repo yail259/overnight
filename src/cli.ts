@@ -131,7 +131,15 @@ interface ParsedConfig {
 
 function parseTasksFile(path: string, cliSecurity?: Partial<SecurityConfig>): ParsedConfig {
   const content = readFileSync(path, "utf-8");
-  const data = parseYaml(content) as TasksFile | (string | JobConfig)[];
+  let data: TasksFile | (string | JobConfig)[];
+  try {
+    data = parseYaml(content) as TasksFile | (string | JobConfig)[];
+  } catch (e) {
+    const error = e as Error;
+    console.error(`\x1b[31mError parsing ${path}:\x1b[0m`);
+    console.error(`  ${error.message.split('\n')[0]}`);
+    process.exit(1);
+  }
 
   const tasks = Array.isArray(data) ? data : data.tasks ?? [];
   const defaults = Array.isArray(data) ? {} : data.defaults ?? {};

@@ -16,6 +16,58 @@ import {
 import { createSecurityHooks } from "./security.js";
 
 type LogCallback = (msg: string) => void;
+type ProgressCallback = (activity: string) => void;
+
+// Progress display
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+class ProgressDisplay {
+  private interval: ReturnType<typeof setInterval> | null = null;
+  private frame = 0;
+  private startTime = Date.now();
+  private currentActivity = "Working";
+  private lastToolUse = "";
+
+  start(activity: string): void {
+    this.currentActivity = activity;
+    this.startTime = Date.now();
+    this.frame = 0;
+
+    if (this.interval) return;
+
+    this.interval = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - this.startTime) / 1000);
+      const toolInfo = this.lastToolUse ? ` → ${this.lastToolUse}` : "";
+      process.stdout.write(
+        `\r\x1b[K${SPINNER_FRAMES[this.frame]} ${this.currentActivity} (${elapsed}s)${toolInfo}`
+      );
+      this.frame = (this.frame + 1) % SPINNER_FRAMES.length;
+    }, 100);
+  }
+
+  updateActivity(activity: string): void {
+    this.currentActivity = activity;
+  }
+
+  updateTool(toolName: string, detail?: string): void {
+    this.lastToolUse = detail ? `${toolName}: ${detail}` : toolName;
+  }
+
+  stop(finalMessage?: string): void {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    process.stdout.write("\r\x1b[K"); // Clear line
+    if (finalMessage) {
+      console.log(finalMessage);
+    }
+  }
+
+  getElapsed(): number {
+    return (Date.now() - this.startTime) / 1000;
+  }
+}
 
 // Cache the claude executable path
 let claudeExecutablePath: string | undefined;
@@ -94,23 +146,78 @@ async function runWithTimeout<T>(
   }
 }
 
-async function collectResult(
+// Extract useful info from tool input for display
+function getToolDetail(toolName: string, toolInput: Record<string, unknown>): string {
+  switch (toolName) {
+    case "Read":
+    case "Write":
+    case "Edit":
+      const filePath = toolInput.file_path as string;
+      if (filePath) {
+        // Show just filename, not full path
+        return filePath.split("/").pop() || filePath;
+      }
+      break;
+    case "Glob":
+      return (toolInput.pattern as string) || "";
+    case "Grep":
+      return (toolInput.pattern as string)?.slice(0, 20) || "";
+    case "Bash":
+      const cmd = (toolInput.command as string) || "";
+      return cmd.slice(0, 30) + (cmd.length > 30 ? "..." : "");
+  }
+  return "";
+}
+
+async function collectResultWithProgress(
   prompt: string,
-  options: ClaudeCodeOptions
-): Promise<{ sessionId?: string; result?: string }> {
+  options: ClaudeCodeOptions,
+  progress: ProgressDisplay
+): Promise<{ sessionId?: string; result?: string; error?: string }> {
   let sessionId: string | undefined;
   let result: string | undefined;
+  let lastError: string | undefined;
 
-  const conversation = query({ prompt, options });
+  try {
+    const conversation = query({ prompt, options });
 
-  for await (const message of conversation) {
-    if (message.type === "result") {
-      result = message.result;
-      sessionId = message.session_id;
+    for await (const message of conversation) {
+      // Debug logging
+      if (process.env.OVERNIGHT_DEBUG) {
+        console.error(`\n[DEBUG] message.type=${message.type}, keys=${Object.keys(message).join(",")}`);
+      }
+
+      // Handle different message types
+      if (message.type === "result") {
+        result = message.result;
+        sessionId = message.session_id;
+      } else if (message.type === "assistant" && "message" in message) {
+        // Assistant message with tool use - SDK nests content in message.message
+        const assistantMsg = message.message as { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> };
+        if (assistantMsg.content) {
+          for (const block of assistantMsg.content) {
+            if (process.env.OVERNIGHT_DEBUG) {
+              console.error(`[DEBUG] content block: type=${block.type}, name=${block.name}`);
+            }
+            if (block.type === "tool_use" && block.name) {
+              const detail = block.input ? getToolDetail(block.name, block.input) : "";
+              progress.updateTool(block.name, detail);
+            }
+          }
+        }
+      } else if (message.type === "system" && "subtype" in message) {
+        // System messages
+        if (message.subtype === "init") {
+          sessionId = message.session_id;
+        }
+      }
     }
+  } catch (e) {
+    lastError = (e as Error).message;
+    throw e;
   }
 
-  return { sessionId, result };
+  return { sessionId, result, error: lastError };
 }
 
 export async function runJob(
@@ -126,14 +233,15 @@ export async function runJob(
   let retriesUsed = 0;
 
   const logMsg = (msg: string) => log?.(msg);
+  const progress = new ProgressDisplay();
 
   // Find claude executable once at start
   const claudePath = findClaudeExecutable();
   if (!claudePath) {
-    logMsg("\x1b[31mError: Could not find 'claude' CLI.\x1b[0m");
-    logMsg("\x1b[33mInstall it with:\x1b[0m");
-    logMsg("  curl -fsSL https://claude.ai/install.sh | bash");
-    logMsg("\x1b[33mOr set CLAUDE_CODE_PATH environment variable.\x1b[0m");
+    logMsg("\x1b[31m✗ Error: Could not find 'claude' CLI.\x1b[0m");
+    logMsg("\x1b[33m  Install it with:\x1b[0m");
+    logMsg("    curl -fsSL https://claude.ai/install.sh | bash");
+    logMsg("\x1b[33m  Or set CLAUDE_CODE_PATH environment variable.\x1b[0m");
     return {
       task: config.prompt,
       status: "failed",
@@ -147,7 +255,10 @@ export async function runJob(
   if (process.env.OVERNIGHT_DEBUG) {
     logMsg(`\x1b[2mDebug: Claude path = ${claudePath}\x1b[0m`);
   }
-  logMsg(`Starting: ${config.prompt.slice(0, 60)}...`);
+
+  // Show task being started
+  const taskPreview = config.prompt.slice(0, 60) + (config.prompt.length > 60 ? "..." : "");
+  logMsg(`\x1b[36m▶\x1b[0m ${taskPreview}`);
 
   for (let attempt = 0; attempt <= retryCount; attempt++) {
     try {
@@ -166,26 +277,31 @@ export async function runJob(
       let sessionId: string | undefined;
       let result: string | undefined;
 
+      // Start progress display
+      progress.start("Working");
+
       try {
         const collected = await runWithTimeout(
-          collectResult(config.prompt, options),
+          collectResultWithProgress(config.prompt, options, progress),
           timeout
         );
         sessionId = collected.sessionId;
         result = collected.result;
+        progress.stop();
       } catch (e) {
+        progress.stop();
         if ((e as Error).message === "TIMEOUT") {
           if (attempt < retryCount) {
             retriesUsed = attempt + 1;
             const delay = retryDelay * Math.pow(2, attempt);
             logMsg(
-              `Timeout after ${config.timeout_seconds ?? DEFAULT_TIMEOUT}s, retrying in ${delay}s (attempt ${attempt + 1}/${retryCount})...`
+              `\x1b[33m⚠ Timeout after ${config.timeout_seconds ?? DEFAULT_TIMEOUT}s, retrying in ${delay}s (${attempt + 1}/${retryCount})\x1b[0m`
             );
             await sleep(delay * 1000);
             continue;
           }
           logMsg(
-            `Timeout after ${config.timeout_seconds ?? DEFAULT_TIMEOUT}s (exhausted retries)`
+            `\x1b[31m✗ Timeout after ${config.timeout_seconds ?? DEFAULT_TIMEOUT}s (exhausted retries)\x1b[0m`
           );
           return {
             task: config.prompt,
@@ -201,7 +317,7 @@ export async function runJob(
 
       // Verification pass if enabled
       if (config.verify !== false && sessionId) {
-        logMsg("Running verification...");
+        progress.start("Verifying");
 
         const verifyOptions: ClaudeCodeOptions = {
           resume: sessionId,
@@ -211,9 +327,10 @@ export async function runJob(
 
         try {
           const verifyResult = await runWithTimeout(
-            collectResult(verifyPrompt, verifyOptions),
+            collectResultWithProgress(verifyPrompt, verifyOptions, progress),
             timeout / 2
           );
+          progress.stop();
 
           const issueWords = ["issue", "error", "fail", "incorrect", "missing"];
           if (
@@ -222,7 +339,7 @@ export async function runJob(
               verifyResult.result!.toLowerCase().includes(word)
             )
           ) {
-            logMsg("Verification found potential issues");
+            logMsg(`\x1b[33m⚠ Verification found potential issues\x1b[0m`);
             return {
               task: config.prompt,
               status: "verification_failed",
@@ -234,8 +351,9 @@ export async function runJob(
             };
           }
         } catch (e) {
+          progress.stop();
           if ((e as Error).message === "TIMEOUT") {
-            logMsg("Verification timed out - continuing anyway");
+            logMsg("\x1b[33m⚠ Verification timed out - continuing anyway\x1b[0m");
           } else {
             throw e;
           }
@@ -243,7 +361,7 @@ export async function runJob(
       }
 
       const duration = (Date.now() - startTime) / 1000;
-      logMsg(`Completed in ${duration.toFixed(1)}s`);
+      logMsg(`\x1b[32m✓ Completed in ${duration.toFixed(1)}s\x1b[0m`);
 
       return {
         task: config.prompt,
@@ -254,19 +372,20 @@ export async function runJob(
         retries: retriesUsed,
       };
     } catch (e) {
+      progress.stop();
       const error = e as Error;
       if (isRetryableError(error) && attempt < retryCount) {
         retriesUsed = attempt + 1;
         const delay = retryDelay * Math.pow(2, attempt);
         logMsg(
-          `Retryable error: ${error.message}, retrying in ${delay}s (attempt ${attempt + 1}/${retryCount})...`
+          `\x1b[33m⚠ ${error.message}, retrying in ${delay}s (${attempt + 1}/${retryCount})\x1b[0m`
         );
         await sleep(delay * 1000);
         continue;
       }
 
       const duration = (Date.now() - startTime) / 1000;
-      logMsg(`Failed: ${error.message}`);
+      logMsg(`\x1b[31m✗ Failed: ${error.message}\x1b[0m`);
       return {
         task: config.prompt,
         status: "failed",
@@ -320,7 +439,7 @@ export async function runJobsWithState(
   for (let i = 0; i < configs.length; i++) {
     if (i < startIndex) continue;
 
-    options.log?.(`\n[${i + 1}/${configs.length}] Running job...`);
+    options.log?.(`\n\x1b[1m[${i + 1}/${configs.length}]\x1b[0m`);
 
     const result = await runJob(configs[i], options.log);
     results.push(result);
