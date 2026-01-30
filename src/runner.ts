@@ -342,36 +342,51 @@ export async function runJob(
         throw e;
       }
 
-      // Verification pass if enabled
+      // Verification pass if enabled — verify and fix issues
       if (config.verify !== false && sessionId) {
         progress.start("Verifying");
 
         const verifyOptions: ClaudeCodeOptions = {
+          allowedTools: tools,
           resume: sessionId,
           permissionMode: "acceptEdits",
           ...(claudePath && { pathToClaudeCodeExecutable: claudePath }),
+          ...(config.working_dir && { cwd: config.working_dir }),
+          ...(config.security?.max_turns && { maxTurns: config.security.max_turns }),
         };
+
+        const fixPrompt = verifyPrompt +
+          " If you find any issues, fix them now. Only report issues you cannot fix.";
 
         try {
           const verifyResult = await runWithTimeout(
-            collectResultWithProgress(verifyPrompt, verifyOptions, progress),
+            collectResultWithProgress(fixPrompt, verifyOptions, progress, (id) => {
+              sessionId = id;
+              options?.onSessionId?.(id);
+            }),
             timeout / 2
           );
           progress.stop();
 
-          const issueWords = ["issue", "error", "fail", "incorrect", "missing"];
+          // Update result with verification output
+          if (verifyResult.result) {
+            result = verifyResult.result;
+          }
+
+          // Only mark as failed if there are issues that couldn't be fixed
+          const unfixableWords = ["cannot fix", "unable to", "blocked by", "requires manual"];
           if (
             verifyResult.result &&
-            issueWords.some((word) =>
+            unfixableWords.some((word) =>
               verifyResult.result!.toLowerCase().includes(word)
             )
           ) {
-            logMsg(`\x1b[33m⚠ Verification found potential issues\x1b[0m`);
+            logMsg(`\x1b[33m⚠ Verification found unfixable issues\x1b[0m`);
             return {
               task: config.prompt,
               status: "verification_failed",
               result,
-              error: `Verification issues: ${verifyResult.result}`,
+              error: `Unfixable issues: ${verifyResult.result}`,
               duration_seconds: (Date.now() - startTime) / 1000,
               verified: false,
               retries: retriesUsed,
