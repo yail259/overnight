@@ -21,7 +21,7 @@ import {
   runJobsWithState,
   loadState,
   resultsToJson,
-  taskHash,
+  taskKey,
 } from "./runner.js";
 import { sendNtfyNotification } from "./notify.js";
 import { generateReport } from "./report.js";
@@ -170,6 +170,8 @@ function parseTasksFile(path: string, cliSecurity?: Partial<SecurityConfig>): Pa
       };
     }
     return {
+      id: task.id ?? undefined,
+      depends_on: task.depends_on ?? undefined,
       prompt: task.prompt,
       working_dir: task.working_dir ?? undefined,
       timeout_seconds:
@@ -267,7 +269,7 @@ program
     const existingState = loadState(opts.stateFile ?? DEFAULT_STATE_FILE);
     if (existingState) {
       const done = Object.keys(existingState.completed).length;
-      const pending = configs.filter(c => !(taskHash(c.prompt) in existingState.completed)).length;
+      const pending = configs.filter(c => !(taskKey(c) in existingState.completed)).length;
       console.log(`\x1b[1movernight: Resuming — ${done} done, ${pending} remaining\x1b[0m`);
       console.log(`\x1b[2mLast checkpoint: ${existingState.timestamp}\x1b[0m`);
     } else {
@@ -371,7 +373,7 @@ program
     }
 
     const completedCount = Object.keys(state.completed).length;
-    const pendingCount = configs.filter(c => !(taskHash(c.prompt) in state.completed)).length;
+    const pendingCount = configs.filter(c => !(taskKey(c) in state.completed)).length;
     console.log(
       `\x1b[1movernight: Resuming — ${completedCount} done, ${pendingCount} remaining\x1b[0m`
     );

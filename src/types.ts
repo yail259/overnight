@@ -6,6 +6,8 @@ export interface SecurityConfig {
 }
 
 export interface JobConfig {
+  id?: string;                // Stable task identifier for dependency references
+  depends_on?: string[];      // IDs of tasks that must complete before this one
   prompt: string;
   working_dir?: string;
   timeout_seconds?: number;

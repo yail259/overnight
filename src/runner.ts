@@ -454,8 +454,61 @@ export async function runJob(
   };
 }
 
+export function taskKey(config: JobConfig): string {
+  if (config.id) return config.id;
+  return createHash("sha256").update(config.prompt).digest("hex").slice(0, 12);
+}
+
+/** @deprecated Use taskKey(config) instead — kept for CLI backward compat */
 export function taskHash(prompt: string): string {
   return createHash("sha256").update(prompt).digest("hex").slice(0, 12);
+}
+
+function validateDag(configs: JobConfig[]): string | null {
+  const ids = new Set(configs.map(c => c.id).filter(Boolean));
+  // Check all depends_on references exist
+  for (const c of configs) {
+    for (const dep of c.depends_on ?? []) {
+      if (!ids.has(dep)) {
+        return `Task "${c.id ?? c.prompt.slice(0, 40)}" depends on unknown id "${dep}"`;
+      }
+    }
+  }
+  // Check for cycles via DFS
+  const visited = new Set<string>();
+  const inStack = new Set<string>();
+  const idToConfig = new Map(configs.filter(c => c.id).map(c => [c.id!, c]));
+
+  function hasCycle(id: string): boolean {
+    if (inStack.has(id)) return true;
+    if (visited.has(id)) return false;
+    visited.add(id);
+    inStack.add(id);
+    const config = idToConfig.get(id);
+    for (const dep of config?.depends_on ?? []) {
+      if (hasCycle(dep)) return true;
+    }
+    inStack.delete(id);
+    return false;
+  }
+
+  for (const id of ids) {
+    if (hasCycle(id)) return `Dependency cycle detected involving "${id}"`;
+  }
+  return null;
+}
+
+function depsReady(
+  config: JobConfig,
+  completed: Record<string, JobResult>,
+): "ready" | "waiting" | "blocked" {
+  if (!config.depends_on || config.depends_on.length === 0) return "ready";
+  for (const dep of config.depends_on) {
+    const result = completed[dep];
+    if (!result) return "waiting";
+    if (result.status !== "success") return "blocked";
+  }
+  return "ready";
 }
 
 export function saveState(state: RunState, stateFile: string): void {
@@ -481,6 +534,13 @@ export async function runJobsWithState(
 ): Promise<JobResult[]> {
   const stateFile = options.stateFile ?? DEFAULT_STATE_FILE;
 
+  // Validate DAG if any tasks have dependencies
+  const dagError = validateDag(configs);
+  if (dagError) {
+    options.log?.(`\x1b[31m✗ DAG error: ${dagError}\x1b[0m`);
+    return [];
+  }
+
   // Load existing state or start fresh
   const state: RunState = loadState(stateFile) ?? {
     completed: {},
@@ -488,24 +548,53 @@ export async function runJobsWithState(
   };
 
   let currentConfigs = configs;
-  let jobNum = 0;
 
   while (true) {
-    // Find next task that hasn't been completed
-    const pending = currentConfigs.filter(c => !(taskHash(c.prompt) in state.completed));
+    // Find tasks not yet completed
+    const notDone = currentConfigs.filter(c => !(taskKey(c) in state.completed));
+    if (notDone.length === 0) break;
 
-    if (pending.length === 0) break;
+    // Among not-done tasks, find those whose dependencies are satisfied
+    const ready = notDone.filter(c => depsReady(c, state.completed) === "ready");
 
-    const config = pending[0];
-    const hash = taskHash(config.prompt);
-    jobNum++;
+    // Find tasks blocked by failed dependencies
+    const blocked = notDone.filter(c => depsReady(c, state.completed) === "blocked");
 
-    const totalPending = pending.length;
+    // Mark blocked tasks as failed without running them
+    for (const bc of blocked) {
+      const key = taskKey(bc);
+      if (key in state.completed) continue; // already recorded
+      const failedDeps = (bc.depends_on ?? []).filter(
+        dep => state.completed[dep] && state.completed[dep].status !== "success"
+      );
+      const label = bc.id ?? bc.prompt.slice(0, 40);
+      options.log?.(`\n\x1b[31m✗ Skipping "${label}" — dependency failed: ${failedDeps.join(", ")}\x1b[0m`);
+      state.completed[key] = {
+        task: bc.prompt,
+        status: "failed",
+        error: `Blocked by failed dependencies: ${failedDeps.join(", ")}`,
+        duration_seconds: 0,
+        verified: false,
+        retries: 0,
+      };
+      state.timestamp = new Date().toISOString();
+      saveState(state, stateFile);
+    }
+
+    // If nothing is ready and nothing is blocked, everything remaining is waiting
+    // on something that will never complete — break to avoid infinite loop
+    if (ready.length === 0) break;
+
+    const config = ready[0];
+    const key = taskKey(config);
+
+    const totalNotDone = notDone.length - blocked.length;
     const totalDone = Object.keys(state.completed).length;
-    options.log?.(`\n\x1b[1m[${totalDone + 1}/${totalDone + totalPending}]\x1b[0m`);
+    const label = config.id ? `${config.id}` : "";
+    options.log?.(`\n\x1b[1m[${totalDone + 1}/${totalDone + totalNotDone}]${label ? ` ${label}` : ""}\x1b[0m`);
 
     // Check if this task was previously in-progress (crashed mid-task)
-    const resumeSessionId = (state.inProgress?.hash === hash)
+    const resumeSessionId = (state.inProgress?.hash === key)
       ? state.inProgress.sessionId
       : undefined;
 
@@ -514,20 +603,20 @@ export async function runJobsWithState(
     }
 
     // Mark task as in-progress before starting
-    state.inProgress = { hash, prompt: config.prompt, startedAt: new Date().toISOString() };
+    state.inProgress = { hash: key, prompt: config.prompt, startedAt: new Date().toISOString() };
     saveState(state, stateFile);
 
     const result = await runJob(config, options.log, {
       resumeSessionId,
       onSessionId: (id) => {
         // Checkpoint the session ID so we can resume on crash
-        state.inProgress = { hash, prompt: config.prompt, sessionId: id, startedAt: state.inProgress!.startedAt };
+        state.inProgress = { hash: key, prompt: config.prompt, sessionId: id, startedAt: state.inProgress!.startedAt };
         saveState(state, stateFile);
       },
     });
 
     // Task done — save result and clear in-progress
-    state.completed[hash] = result;
+    state.completed[key] = result;
     state.inProgress = undefined;
     state.timestamp = new Date().toISOString();
     saveState(state, stateFile);
@@ -536,21 +625,28 @@ export async function runJobsWithState(
     if (options.reloadConfigs) {
       try {
         currentConfigs = options.reloadConfigs();
+        // Re-validate DAG with new configs
+        const newDagError = validateDag(currentConfigs);
+        if (newDagError) {
+          options.log?.(`\x1b[33m⚠ DAG error in updated YAML, ignoring reload: ${newDagError}\x1b[0m`);
+          currentConfigs = configs; // revert to original
+        }
       } catch {
         // If reload fails (e.g. YAML syntax error mid-edit), keep current list
       }
     }
 
     // Brief pause between jobs
-    const nextPending = currentConfigs.filter(c => !(taskHash(c.prompt) in state.completed));
-    if (nextPending.length > 0) {
+    const nextNotDone = currentConfigs.filter(c => !(taskKey(c) in state.completed));
+    const nextReady = nextNotDone.filter(c => depsReady(c, state.completed) === "ready");
+    if (nextReady.length > 0) {
       await sleep(1000);
     }
   }
 
   // Collect results in original order
   const results = currentConfigs
-    .map(c => state.completed[taskHash(c.prompt)])
+    .map(c => state.completed[taskKey(c)])
     .filter((r): r is JobResult => r !== undefined);
 
   // Clean up state file on completion
