@@ -49,7 +49,7 @@ export function createSecurityHooks(config: SecurityConfig) {
   // PreToolUse hook for path validation
   const preToolUseHook = async (
     input: Record<string, unknown>,
-    _toolUseId: string | null,
+    _toolUseId: string | undefined,
     _context: { signal?: AbortSignal }
   ) => {
     const hookEventName = input.hook_event_name as string;
@@ -80,8 +80,8 @@ export function createSecurityHooks(config: SecurityConfig) {
     if (sandboxDir && !isPathWithinSandbox(filePath, sandboxDir)) {
       return {
         hookSpecificOutput: {
-          hookEventName,
-          permissionDecision: "deny",
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "deny" as const,
           permissionDecisionReason: `Path "${filePath}" is outside sandbox directory "${sandboxDir}"`,
         },
       };
@@ -92,8 +92,8 @@ export function createSecurityHooks(config: SecurityConfig) {
     if (matchedPattern) {
       return {
         hookSpecificOutput: {
-          hookEventName,
-          permissionDecision: "deny",
+          hookEventName: "PreToolUse" as const,
+          permissionDecision: "deny" as const,
           permissionDecisionReason: `Path "${filePath}" matches deny pattern "${matchedPattern}"`,
         },
       };
@@ -105,7 +105,7 @@ export function createSecurityHooks(config: SecurityConfig) {
   // PostToolUse hook for audit logging
   const postToolUseHook = async (
     input: Record<string, unknown>,
-    _toolUseId: string | null,
+    _toolUseId: string | undefined,
     _context: { signal?: AbortSignal }
   ) => {
     if (!auditLog) return {};

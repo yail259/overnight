@@ -132,7 +132,7 @@ async function runWithTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number
 ): Promise<T> {
-  let timeoutId: Timer;
+  let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs);
   });
@@ -191,8 +191,10 @@ async function collectResultWithProgress(
 
       // Handle different message types
       if (message.type === "result") {
-        result = message.result;
         sessionId = message.session_id;
+        if (message.subtype === "success") {
+          result = message.result;
+        }
       } else if (message.type === "assistant" && "message" in message) {
         // Assistant message with tool use - SDK nests content in message.message
         const assistantMsg = message.message as { content?: Array<{ type: string; name?: string; input?: Record<string, unknown> }> };
@@ -274,6 +276,8 @@ export async function runJob(
     logMsg(`\x1b[36m▶\x1b[0m ${taskPreview}`);
   }
 
+  let sessionId: string | undefined;
+
   for (let attempt = 0; attempt <= retryCount; attempt++) {
     try {
       // Build security hooks if security config provided
@@ -289,7 +293,6 @@ export async function runJob(
         ...(resumeSessionId && { resume: resumeSessionId }),
       };
 
-      let sessionId: string | undefined;
       let result: string | undefined;
 
       // Prompt: if resuming, ask to continue; otherwise use original prompt
@@ -465,7 +468,7 @@ export function taskHash(prompt: string): string {
 }
 
 function validateDag(configs: JobConfig[]): string | null {
-  const ids = new Set(configs.map(c => c.id).filter(Boolean));
+  const ids = new Set(configs.map(c => c.id).filter((id): id is string => Boolean(id)));
   // Check all depends_on references exist
   for (const c of configs) {
     for (const dep of c.depends_on ?? []) {
