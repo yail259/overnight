@@ -1,7 +1,7 @@
 {
   "name": "@yail259/overnight",
-  "version": "0.2.0",
-  "description": "Batch job runner for Claude Code - queue tasks, run overnight, wake up to results",
+  "version": "0.3.0",
+  "description": "Autonomous build runner for Claude Code - goal-driven loops with verification gates",
   "type": "module",
   "bin": {
     "overnight": "./dist/cli.js"
