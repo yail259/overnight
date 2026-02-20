@@ -1,6 +1,5 @@
 import { query, type Options as ClaudeCodeOptions } from "@anthropic-ai/claude-agent-sdk";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { execSync } from "child_process";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   type GoalConfig,
@@ -17,6 +16,7 @@ import {
   DEFAULT_CONVERGENCE_THRESHOLD,
   DEFAULT_DENY_PATTERNS,
 } from "./types.js";
+import { findClaudeExecutable } from "./runner.js";
 import { createSecurityHooks } from "./security.js";
 
 type LogCallback = (msg: string) => void;
@@ -118,36 +118,6 @@ class ProgressDisplay {
     process.stdout.write("\r\x1b[K");
     if (finalMessage) console.log(finalMessage);
   }
-}
-
-// --- Claude execution helpers ---
-
-let claudeExecutablePath: string | undefined;
-
-function findClaudeExecutable(): string | undefined {
-  if (claudeExecutablePath !== undefined) return claudeExecutablePath;
-  if (process.env.CLAUDE_CODE_PATH) {
-    claudeExecutablePath = process.env.CLAUDE_CODE_PATH;
-    return claudeExecutablePath;
-  }
-  try {
-    const cmd = process.platform === "win32" ? "where claude" : "which claude";
-    claudeExecutablePath = execSync(cmd, { encoding: "utf-8" }).trim().split("\n")[0];
-    return claudeExecutablePath;
-  } catch {
-    const commonPaths = [
-      "/usr/local/bin/claude",
-      "/opt/homebrew/bin/claude",
-      `${process.env.HOME}/.local/bin/claude`,
-    ];
-    for (const p of commonPaths) {
-      if (existsSync(p)) {
-        claudeExecutablePath = p;
-        return claudeExecutablePath;
-      }
-    }
-  }
-  return undefined;
 }
 
 async function runWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
