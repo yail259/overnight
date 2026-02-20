@@ -1,6 +1,5 @@
 import { query, type Options as ClaudeCodeOptions } from "@anthropic-ai/claude-agent-sdk";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { execSync } from "child_process";
+import { readFileSync, writeFileSync } from "fs";
 import { stringify as stringifyYaml } from "yaml";
 import * as readline from "readline";
 import {
@@ -12,38 +11,9 @@ import {
   DEFAULT_CONVERGENCE_THRESHOLD,
   DEFAULT_DENY_PATTERNS,
 } from "./types.js";
+import { findClaudeExecutable } from "./runner.js";
 
 type LogCallback = (msg: string) => void;
-
-// --- Claude executable ---
-
-let claudeExecutablePath: string | undefined;
-
-function findClaudeExecutable(): string | undefined {
-  if (claudeExecutablePath !== undefined) return claudeExecutablePath;
-  if (process.env.CLAUDE_CODE_PATH) {
-    claudeExecutablePath = process.env.CLAUDE_CODE_PATH;
-    return claudeExecutablePath;
-  }
-  try {
-    const cmd = process.platform === "win32" ? "where claude" : "which claude";
-    claudeExecutablePath = execSync(cmd, { encoding: "utf-8" }).trim().split("\n")[0];
-    return claudeExecutablePath;
-  } catch {
-    const commonPaths = [
-      "/usr/local/bin/claude",
-      "/opt/homebrew/bin/claude",
-      `${process.env.HOME}/.local/bin/claude`,
-    ];
-    for (const p of commonPaths) {
-      if (existsSync(p)) {
-        claudeExecutablePath = p;
-        return claudeExecutablePath;
-      }
-    }
-  }
-  return undefined;
-}
 
 // --- Interactive prompting ---
 
