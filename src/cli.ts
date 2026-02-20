@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { execSync } from "child_process";
 import { parse as parseYaml } from "yaml";
 import {
   type JobConfig,
@@ -35,6 +36,7 @@ import { runGoal, parseGoalFile } from "./goal-runner.js";
 import { runPlanner } from "./planner.js";
 import { runAgentLoop } from "./agent/index.js";
 import { runEvolveLoop } from "./evolve/index.js";
+import { loadEvolveState } from "./evolve/state.js";
 
 const AGENT_HELP = `
 # overnight - Autonomous Build Runner for Claude Code
@@ -921,10 +923,129 @@ program
       history_log: raw.history_log ?? "evolve-history.jsonl",
       notify: raw.notify ?? false,
       notify_topic: raw.notify_topic ?? "overnight-evolve",
+      require_approval: raw.require_approval ?? false,
+      approval_timeout_seconds: raw.approval_timeout_seconds ?? 3600,
     };
 
     const log = opts.quiet ? () => {} : (msg: string) => console.log(msg);
     await runEvolveLoop(config, { log, quiet: opts.quiet ?? false });
   });
+
+program
+  .command("status")
+  .description("Show current evolve state, recent cycle results, and active branches")
+  .option("--state-file <file>", "Evolve state file path", ".evolve-state.json")
+  .action((opts) => {
+    const dim = (s: string) => `\x1b[2m${s}\x1b[0m`;
+    const bold = (s: string) => `\x1b[1m${s}\x1b[0m`;
+    const green = (s: string) => `\x1b[32m${s}\x1b[0m`;
+    const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`;
+    const red = (s: string) => `\x1b[31m${s}\x1b[0m`;
+    const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
+
+    const fmtDate = (iso: string) =>
+      new Date(iso).toLocaleString(undefined, {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+      });
+
+    const phaseEmoji: Record<string, string> = {
+      observe: "🔍",
+      plan: "📝",
+      execute: "⚙️",
+      verify: "✅",
+      propose: "🚀",
+    };
+
+    console.log(bold("\novernight status\n"));
+
+    // --- Evolve state ---
+    if (!existsSync(opts.stateFile)) {
+      console.log(dim(`No evolve state found at ${opts.stateFile}`));
+      console.log(dim("Run `overnight evolve <config>` to start.\n"));
+      process.exit(0);
+    }
+    const evolveState = loadEvolveState(opts.stateFile);
+
+    console.log(`${bold("Evolve")}  ${dim(opts.stateFile)}`);
+    console.log(`  Cycles completed : ${evolveState.cycle_count}`);
+    if (evolveState.started_at) {
+      console.log(`  Started          : ${fmtDate(evolveState.started_at)}`);
+    }
+    if (evolveState.last_run_at) {
+      console.log(`  Last run         : ${fmtDate(evolveState.last_run_at)}`);
+    }
+
+    // --- Current cycle (in-progress) ---
+    if (evolveState.current_cycle) {
+      const cur = evolveState.current_cycle;
+      const emoji = phaseEmoji[cur.phase] ?? "⏳";
+      console.log(`\n${yellow("● In progress")}  cycle #${cur.cycle}`);
+      console.log(`  Phase  : ${emoji} ${cur.phase}`);
+      if (cur.branch_name) {
+        console.log(`  Branch : ${cur.branch_name}`);
+      }
+      if (cur.plan?.title) {
+        console.log(`  Plan   : ${cur.plan.title}`);
+      }
+    }
+
+    // --- Last 3 completed cycles ---
+    const cycles = evolveState.completed_cycles ?? [];
+    if (cycles.length > 0) {
+      console.log(`\n${bold("Recent cycles")} (${cycles.length} total)`);
+      const recent = cycles.slice(-3).reverse();
+      for (const c of recent) {
+        const ok = c.verify_passed;
+        const statusMark = ok ? green("✓") : red("✗");
+        const durationStr = c.duration_seconds >= 60
+          ? `${Math.floor(c.duration_seconds / 60)}m ${Math.floor(c.duration_seconds % 60)}s`
+          : `${c.duration_seconds.toFixed(0)}s`;
+        console.log(`  ${statusMark} #${c.cycle}  ${dim(fmtDate(c.timestamp))}  ${durationStr}`);
+        if (c.plan_summary) {
+          console.log(`     ${c.plan_summary.slice(0, 72)}`);
+        }
+        if (c.branch_name) {
+          console.log(`     branch: ${cyan(c.branch_name)}`);
+        }
+        if (c.pr_url) {
+          console.log(`     PR    : ${c.pr_url}`);
+        }
+        if (c.error) {
+          console.log(`     ${red("error")}: ${c.error.slice(0, 80)}`);
+        }
+      }
+    }
+
+    // --- Active evolve branches ---
+    try {
+      const branchOutput: string = execSync('git branch --list "evolve/*" --format="%(refname:short)"', {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const branches = branchOutput.split("\n").map((b: string) => b.trim()).filter(Boolean);
+      if (branches.length > 0) {
+        console.log(`\n${bold("Active evolve branches")} (${branches.length})`);
+        branches.forEach((b: string) => console.log(`  ${dim("git checkout")} ${b}`));
+      }
+    } catch {
+      // git not available or not in a repo — skip silently
+    }
+
+    // --- Batch runner state (opportunistic) ---
+    try {
+      const batchState = loadState(DEFAULT_STATE_FILE);
+      if (batchState) {
+        const done = Object.keys(batchState.completed).length;
+        console.log(`\n${bold("Batch runner")}  ${dim(DEFAULT_STATE_FILE)}`);
+        console.log(`  Completed tasks : ${done}`);
+        console.log(`  Checkpoint      : ${fmtDate(batchState.timestamp)}`);
+      }
+    } catch {
+      // no batch state — skip silently
+    }
+
+    console.log("");
+  });
+
 
 program.parse();
