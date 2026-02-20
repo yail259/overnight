@@ -1,0 +1,52 @@
+# overnight evolve examples/evolve.yaml
+# Self-improving meta-agent for the overnight codebase
+#
+# Usage:
+#   overnight evolve examples/evolve.yaml          # continuous loop
+#   overnight evolve examples/evolve.yaml --once   # single cycle
+
+name: "overnight-self-improver"
+description: "Autonomous agent that observes, plans, and implements improvements"
+
+# Target project (. = self-referential)
+project_dir: "."
+
+# Loop timing
+interval_seconds: 3600          # 1 hour between cycles
+max_cycles: 5                   # safety cap — remove for infinite
+
+# Model
+model: "claude-sonnet-4-6"
+max_turns_per_phase: 60
+
+# What to work on
+# roadmap_file: "ROADMAP.md"    # optional prioritized backlog
+focus_areas:
+  - tests
+  - refactor
+  - bugs
+
+# Git
+branch_prefix: "evolve/"
+auto_pr: true
+base_branch: "main"
+
+# Safety guardrails
+protected_files:
+  - "src/evolve/guardrails.ts"  # never let the agent weaken its own safety
+  - "package.json"
+  - "bun.lock"
+protected_patterns:
+  - "**/.env*"
+  - "**/*.key"
+  - "**/*.pem"
+max_files_per_cycle: 10
+max_lines_changed_per_cycle: 500
+
+# State persistence
+state_file: ".evolve-state.json"
+history_log: "evolve-history.jsonl"
+
+# Notifications (uncomment to enable)
+# notify: true
+# notify_topic: "overnight-evolve"

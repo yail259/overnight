@@ -127,3 +127,118 @@ export const DEFAULT_DENY_PATTERNS = [
   "**/.npmrc",
   "**/.netrc",
 ];
+
+// --- Agent types ---
+
+export interface AgentConfig {
+  name: string;
+  description?: string;
+  interval_seconds: number;
+  run_during_market_hours_only: boolean;
+  alpaca_key_id?: string;
+  alpaca_secret_key?: string;
+  paper_trading: boolean;
+  max_position_pct: number;
+  max_daily_loss_usd: number;
+  max_order_value_usd: number;
+  allowed_symbols?: string[];
+  model?: string;
+  max_turns_per_loop: number;
+  max_budget_usd_per_loop?: number;
+  state_file: string;
+  decisions_log: string;
+  notify?: boolean;
+  notify_topic?: string;
+}
+
+export interface AgentLoopState {
+  session_id?: string;
+  loop_count: number;
+  started_at: string;
+  last_run_at?: string;
+  daily_realized_pnl: number;
+  daily_pnl_date: string;
+  halted: boolean;
+  halt_reason?: string;
+}
+
+export interface TradeDecision {
+  timestamp: string;
+  loop: number;
+  action: "buy" | "sell" | "hold";
+  symbol?: string;
+  qty?: number;
+  reasoning: string;
+  market_context: string;
+  portfolio_summary: string;
+  order_id?: string;
+}
+
+// --- Evolve types ---
+
+export interface EvolveConfig {
+  name: string;
+  description?: string;
+  project_dir: string;
+  interval_seconds: number;
+  max_cycles?: number;
+  model?: string;
+  max_turns_per_phase?: number;
+  roadmap_file?: string;
+  focus_areas?: string[];
+  branch_prefix: string;
+  auto_pr: boolean;
+  base_branch: string;
+  protected_files?: string[];
+  protected_patterns?: string[];
+  max_files_per_cycle?: number;
+  max_lines_changed_per_cycle?: number;
+  state_file: string;
+  history_log: string;
+  notify?: boolean;
+  notify_topic?: string;
+}
+
+export interface EvolvePlan {
+  improvement_type: "bug_fix" | "refactor" | "test" | "feature" | "performance";
+  title: string;
+  description: string;
+  files_to_modify: string[];
+  verification_commands: string[];
+  risk_assessment: string;
+}
+
+export interface EvolveVerifyResult {
+  all_passed: boolean;
+  build_passed: boolean;
+  tests_passed: boolean;
+  issues_found: string[];
+}
+
+export interface EvolveCycleResult {
+  cycle: number;
+  timestamp: string;
+  phase_reached: "observe" | "plan" | "execute" | "verify" | "propose";
+  plan_summary: string;
+  files_changed: string[];
+  branch_name?: string;
+  pr_url?: string;
+  verify_passed: boolean;
+  error?: string;
+  duration_seconds: number;
+  cost_usd: number;
+}
+
+export interface EvolveState {
+  session_id?: string;
+  cycle_count: number;
+  started_at: string;
+  last_run_at?: string;
+  completed_cycles: EvolveCycleResult[];
+  current_cycle?: {
+    cycle: number;
+    phase: string;
+    branch_name?: string;
+    plan?: EvolvePlan;
+  };
+}

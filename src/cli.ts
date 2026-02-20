@@ -8,6 +8,8 @@ import {
   type TasksFile,
   type GoalConfig,
   type SecurityConfig,
+  type AgentConfig,
+  type EvolveConfig,
   DEFAULT_TOOLS,
   DEFAULT_TIMEOUT,
   DEFAULT_STALL_TIMEOUT,
@@ -31,6 +33,8 @@ import { sendNtfyNotification } from "./notify.js";
 import { generateReport } from "./report.js";
 import { runGoal, parseGoalFile } from "./goal-runner.js";
 import { runPlanner } from "./planner.js";
+import { runAgentLoop } from "./agent/index.js";
+import { runEvolveLoop } from "./evolve/index.js";
 
 const AGENT_HELP = `
 # overnight - Autonomous Build Runner for Claude Code
@@ -816,6 +820,111 @@ defaults:
       console.log("Edit the file, then run: \x1b[1movernight run goal.yaml\x1b[0m");
       console.log("\x1b[2mTip: Use 'overnight plan \"your goal\"' for an interactive design session\x1b[0m");
     }
+  });
+
+program
+  .command("agent")
+  .description("Run an autonomous agent from a YAML config (e.g. portfolio manager)")
+  .argument("<config-file>", "Path to agent YAML config file")
+  .option("-q, --quiet", "Minimal output")
+  .option("--key-id <id>", "Alpaca API key ID (overrides config/env)")
+  .option("--secret-key <key>", "Alpaca secret key (overrides config/env)")
+  .action(async (configFile, opts) => {
+    if (!existsSync(configFile)) {
+      console.error(`Error: Config file not found: ${configFile}`);
+      process.exit(1);
+    }
+
+    const raw = parseYaml(readFileSync(configFile, "utf-8")) as Partial<AgentConfig>;
+
+    if (!raw.name) {
+      console.error("Error: agent config must have 'name'");
+      process.exit(1);
+    }
+    if (raw.paper_trading === false) {
+      console.error("Error: paper_trading must be true for safety");
+      process.exit(1);
+    }
+
+    const config: AgentConfig = {
+      name: raw.name,
+      description: raw.description,
+      interval_seconds: raw.interval_seconds ?? 300,
+      run_during_market_hours_only: raw.run_during_market_hours_only ?? true,
+      paper_trading: true,
+      alpaca_key_id: opts.keyId ?? raw.alpaca_key_id,
+      alpaca_secret_key: opts.secretKey ?? raw.alpaca_secret_key,
+      max_position_pct: raw.max_position_pct ?? 0.10,
+      max_daily_loss_usd: raw.max_daily_loss_usd ?? 200,
+      max_order_value_usd: raw.max_order_value_usd ?? 500,
+      allowed_symbols: raw.allowed_symbols,
+      model: raw.model ?? "claude-sonnet-4-6",
+      max_turns_per_loop: raw.max_turns_per_loop ?? 40,
+      max_budget_usd_per_loop: raw.max_budget_usd_per_loop,
+      state_file: raw.state_file ?? ".portfolio-state.json",
+      decisions_log: raw.decisions_log ?? "portfolio-decisions.jsonl",
+      notify: raw.notify ?? false,
+      notify_topic: raw.notify_topic ?? "portfolio-agent",
+    };
+
+    if (!config.alpaca_key_id && !process.env.ALPACA_KEY_ID) {
+      console.error("Error: Alpaca credentials required.");
+      console.error("  Set ALPACA_KEY_ID and ALPACA_SECRET_KEY env vars");
+      console.error("  Or use --key-id / --secret-key flags");
+      console.error("  Or add alpaca_key_id / alpaca_secret_key to config file");
+      process.exit(1);
+    }
+
+    const log = opts.quiet ? () => {} : (msg: string) => console.log(msg);
+    await runAgentLoop(config, { log, quiet: opts.quiet ?? false });
+  });
+
+program
+  .command("evolve")
+  .description("Run the meta-agent to autonomously improve a codebase")
+  .argument("<config-file>", "Path to evolve YAML config file")
+  .option("-q, --quiet", "Minimal output")
+  .option("--once", "Run a single evolution cycle then exit")
+  .action(async (configFile, opts) => {
+    if (!existsSync(configFile)) {
+      console.error(`Error: Config file not found: ${configFile}`);
+      process.exit(1);
+    }
+
+    const raw = parseYaml(readFileSync(configFile, "utf-8")) as Partial<EvolveConfig>;
+
+    if (!raw.name) {
+      console.error("Error: evolve config must have 'name'");
+      process.exit(1);
+    }
+
+    const { resolve } = await import("path");
+
+    const config: EvolveConfig = {
+      name: raw.name,
+      description: raw.description,
+      project_dir: resolve(raw.project_dir ?? process.cwd()),
+      interval_seconds: raw.interval_seconds ?? 3600,
+      max_cycles: opts.once ? 1 : raw.max_cycles,
+      model: raw.model ?? "claude-sonnet-4-6",
+      max_turns_per_phase: raw.max_turns_per_phase ?? 60,
+      roadmap_file: raw.roadmap_file,
+      focus_areas: raw.focus_areas,
+      branch_prefix: raw.branch_prefix ?? "evolve/",
+      auto_pr: raw.auto_pr ?? true,
+      base_branch: raw.base_branch ?? "main",
+      protected_files: raw.protected_files,
+      protected_patterns: raw.protected_patterns,
+      max_files_per_cycle: raw.max_files_per_cycle ?? 10,
+      max_lines_changed_per_cycle: raw.max_lines_changed_per_cycle ?? 500,
+      state_file: raw.state_file ?? ".evolve-state.json",
+      history_log: raw.history_log ?? "evolve-history.jsonl",
+      notify: raw.notify ?? false,
+      notify_topic: raw.notify_topic ?? "overnight-evolve",
+    };
+
+    const log = opts.quiet ? () => {} : (msg: string) => console.log(msg);
+    await runEvolveLoop(config, { log, quiet: opts.quiet ?? false });
   });
 
 program.parse();

@@ -3,16 +3,20 @@ import { resolve, relative, isAbsolute } from "path";
 import { type SecurityConfig, DEFAULT_DENY_PATTERNS } from "./types.js";
 
 // Simple glob pattern matching (supports * and **)
-function matchesPattern(filePath: string, pattern: string): boolean {
+export function matchesPattern(filePath: string, pattern: string): boolean {
   // Normalize path
   const normalizedPath = filePath.replace(/\\/g, "/");
 
-  // Convert glob to regex
+  // Convert glob to regex.
+  // **/ is treated as "zero or more path segments optionally followed by /",
+  // so patterns like **/.env correctly match files at the root level too.
   let regex = pattern
-    .replace(/\./g, "\\.")           // Escape dots
-    .replace(/\*\*/g, "{{GLOBSTAR}}")  // Placeholder for **
-    .replace(/\*/g, "[^/]*")         // * matches anything except /
-    .replace(/{{GLOBSTAR}}/g, ".*"); // ** matches anything including /
+    .replace(/\./g, "\\.")                      // Escape dots
+    .replace(/\*\*\//g, "{{GLOBSTAR_SEP}}")     // **/ → optional path prefix
+    .replace(/\*\*/g, "{{GLOBSTAR}}")            // bare ** → match anything
+    .replace(/\*/g, "[^/]*")                    // * → match within one segment
+    .replace(/{{GLOBSTAR_SEP}}/g, "(?:.+\\/)?") // **/ → "something/" or nothing
+    .replace(/{{GLOBSTAR}}/g, ".*");              // ** → anything
 
   // Match anywhere in path if pattern doesn't start with /
   if (!pattern.startsWith("/")) {
@@ -22,7 +26,7 @@ function matchesPattern(filePath: string, pattern: string): boolean {
   return new RegExp(regex + "$").test(normalizedPath);
 }
 
-function isPathWithinSandbox(filePath: string, sandboxDir: string): boolean {
+export function isPathWithinSandbox(filePath: string, sandboxDir: string): boolean {
   const absolutePath = isAbsolute(filePath) ? filePath : resolve(process.cwd(), filePath);
   const absoluteSandbox = isAbsolute(sandboxDir) ? sandboxDir : resolve(process.cwd(), sandboxDir);
 

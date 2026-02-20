@@ -73,7 +73,7 @@ class ProgressDisplay {
 // Cache the claude executable path
 let claudeExecutablePath: string | undefined;
 
-function findClaudeExecutable(): string | undefined {
+export function findClaudeExecutable(): string | undefined {
   if (claudeExecutablePath !== undefined) return claudeExecutablePath;
 
   // Check environment variable first
@@ -467,7 +467,7 @@ export function taskHash(prompt: string): string {
   return createHash("sha256").update(prompt).digest("hex").slice(0, 12);
 }
 
-function validateDag(configs: JobConfig[]): string | null {
+export function validateDag(configs: JobConfig[]): string | null {
   const ids = new Set(configs.map(c => c.id).filter((id): id is string => Boolean(id)));
   // Check all depends_on references exist
   for (const c of configs) {
@@ -501,7 +501,7 @@ function validateDag(configs: JobConfig[]): string | null {
   return null;
 }
 
-function depsReady(
+export function depsReady(
   config: JobConfig,
   completed: Record<string, JobResult>,
 ): "ready" | "waiting" | "blocked" {

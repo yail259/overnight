@@ -1,0 +1,50 @@
+# overnight agent portfolio.yaml
+# Autonomous portfolio manager on Alpaca paper trading
+#
+# Setup:
+#   1. Sign up at https://app.alpaca.markets (free paper trading account)
+#   2. API Keys → Generate New Key (ensure "Paper Trading" is selected)
+#   3. Export credentials:
+#      export ALPACA_KEY_ID="your-key-id"
+#      export ALPACA_SECRET_KEY="your-secret-key"
+#
+# Run:
+#   overnight agent examples/portfolio.yaml
+#
+# Monitor:
+#   tail -f portfolio-decisions.jsonl | jq .
+
+name: "poc-portfolio-manager"
+description: "PoC quant agent — momentum + mean reversion on large caps"
+
+# Loop timing
+interval_seconds: 300              # Run every 5 minutes
+run_during_market_hours_only: true  # Skip when market is closed
+
+# Alpaca paper trading (credentials from env vars)
+paper_trading: true
+
+# Guardrails
+max_position_pct: 0.10             # Max 10% of portfolio per symbol
+max_daily_loss_usd: 500            # Halt trading if daily loss exceeds $500
+max_order_value_usd: 1000          # No single order over $1000
+allowed_symbols:                   # Optional allowlist (remove to trade anything)
+  - AAPL
+  - MSFT
+  - GOOGL
+  - AMZN
+  - NVDA
+  - SPY
+  - QQQ
+
+# Agent behavior
+model: "claude-sonnet-4-6"
+max_turns_per_loop: 40
+
+# Persistence
+state_file: ".portfolio-state.json"
+decisions_log: "portfolio-decisions.jsonl"
+
+# Notifications (optional — uses ntfy.sh, free, no signup)
+# notify: true
+# notify_topic: "portfolio-agent"
