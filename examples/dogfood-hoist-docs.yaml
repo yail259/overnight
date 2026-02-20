@@ -1,0 +1,56 @@
+defaults:
+  timeout_seconds: 300
+  verify: false
+  allowed_tools:
+    - Read
+    - Bash
+    - Glob
+    - Grep
+
+tasks:
+  - id: "hoist-gen-rlint-docs"
+    prompt: |
+      Run the Hoist doc generation pipeline to create API documentation for rlint.
+      Execute: node /Users/yao/projects/Hoist/examples/node/generate_ptero_docs.mjs \
+        --project rlint \
+        --src "/Users/yao/projects/rlint/renderlint/src/*.ts" \
+        --output "/Users/yao/projects/pterodactyl/src/content/docs/reference/rlint-api.md"
+
+      Prerequisites: Ollama must be running (ollama serve).
+      Report the output and any errors.
+    timeout_seconds: 600
+
+  - id: "hoist-gen-overnight-docs"
+    prompt: |
+      Run the Hoist doc generation pipeline to create API documentation for overnight.
+      Execute: node /Users/yao/projects/Hoist/examples/node/generate_ptero_docs.mjs \
+        --project overnight \
+        --src "/Users/yao/projects/overnight/src/*.ts" \
+        --output "/Users/yao/projects/pterodactyl/src/content/docs/reference/overnight-api.md"
+
+      Prerequisites: Ollama must be running (ollama serve).
+      Report the output and any errors.
+    timeout_seconds: 600
+
+  - id: "hoist-gen-hoist-docs"
+    prompt: |
+      Run the Hoist doc generation pipeline to create API documentation for Hoist itself (self-dogfood).
+      Execute: node /Users/yao/projects/Hoist/examples/node/generate_ptero_docs.mjs \
+        --project hoist \
+        --src "/Users/yao/projects/Hoist/hoist-core/src/*.rs" \
+        --output "/Users/yao/projects/pterodactyl/src/content/docs/reference/hoist-api.md"
+
+      Prerequisites: Ollama must be running (ollama serve).
+      Report the output and any errors.
+    timeout_seconds: 600
+
+  - id: "rebuild-ptero"
+    prompt: |
+      Rebuild the ptero docs site to include the newly generated API docs.
+      Run: cd /Users/yao/projects/pterodactyl && npm run build
+      Report success or any build errors.
+    depends_on:
+      - "hoist-gen-rlint-docs"
+      - "hoist-gen-overnight-docs"
+      - "hoist-gen-hoist-docs"
+    timeout_seconds: 180
