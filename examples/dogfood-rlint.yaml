@@ -1,0 +1,22 @@
+defaults:
+  timeout_seconds: 120
+  verify: false
+  allowed_tools:
+    - Read
+    - Bash
+    - Glob
+    - Grep
+
+tasks:
+  - id: "rlint-yaoke"
+    prompt: "Run rlint layout checks against the yaoke portfolio site. Start the dev server with `cd /Users/yao/projects/yaoke && npm run dev -- --port 5173` in background, wait for it to be ready, then run `cd /Users/yao/projects/rlint/renderlint && bun src/cli.ts check http://localhost:5173/ http://localhost:5173/blogs http://localhost:5173/projects http://localhost:5173/deep-dives --format text`. Report all errors and warnings found. Kill the dev server when done."
+    timeout_seconds: 180
+
+  - id: "rlint-ptero"
+    prompt: "Run rlint layout checks against the pterodactyl docs site. Start the dev server with `cd /Users/yao/projects/pterodactyl && npm run dev -- --port 5174` in background, wait for it to be ready, then run `cd /Users/yao/projects/rlint/renderlint && bun src/cli.ts check http://localhost:5174/ http://localhost:5174/docs --format text`. Report all errors and warnings found. Kill the dev server when done."
+    timeout_seconds: 180
+
+  - id: "rlint-report"
+    prompt: "Summarize the rlint results from the previous tasks. List all errors (must fix) and warnings (should fix) across both yaoke and ptero. Group by check type (overflow, clickability, touch-targets, etc.). Suggest specific CSS fixes for each issue."
+    depends_on: ["rlint-yaoke", "rlint-ptero"]
+    timeout_seconds: 120
