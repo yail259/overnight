@@ -1,4 +1,5 @@
 import { type JobResult, DEFAULT_NTFY_TOPIC } from "./types.js";
+import { formatDuration } from "./utils.js";
 
 export async function sendNtfyNotification(
   results: JobResult[],
@@ -8,19 +9,7 @@ export async function sendNtfyNotification(
   const succeeded = results.filter((r) => r.status === "success").length;
   const failed = results.length - succeeded;
 
-  // Format duration
-  let durationStr: string;
-  if (totalDuration >= 3600) {
-    const hours = Math.floor(totalDuration / 3600);
-    const mins = Math.floor((totalDuration % 3600) / 60);
-    durationStr = `${hours}h ${mins}m`;
-  } else if (totalDuration >= 60) {
-    const mins = Math.floor(totalDuration / 60);
-    const secs = Math.floor(totalDuration % 60);
-    durationStr = `${mins}m ${secs}s`;
-  } else {
-    durationStr = `${totalDuration.toFixed(0)}s`;
-  }
+  const durationStr = formatDuration(totalDuration, 0);
 
   const title =
     failed === 0

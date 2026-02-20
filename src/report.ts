@@ -1,5 +1,6 @@
 import { writeFileSync } from "fs";
 import { type JobResult } from "./types.js";
+import { formatDuration } from "./utils.js";
 
 export function generateReport(
   results: JobResult[],
@@ -25,21 +26,7 @@ export function generateReport(
     lines.push(`- **Failed:** ${failed}`);
   }
 
-  // Duration formatting
-  let durationStr: string;
-  if (totalDuration >= 3600) {
-    const hours = Math.floor(totalDuration / 3600);
-    const mins = Math.floor((totalDuration % 3600) / 60);
-    durationStr = `${hours}h ${mins}m`;
-  } else if (totalDuration >= 60) {
-    const mins = Math.floor(totalDuration / 60);
-    const secs = Math.floor(totalDuration % 60);
-    durationStr = `${mins}m ${secs}s`;
-  } else {
-    durationStr = `${totalDuration.toFixed(1)}s`;
-  }
-
-  lines.push(`- **Total duration:** ${durationStr}`);
+  lines.push(`- **Total duration:** ${formatDuration(totalDuration)}`);
   lines.push("");
 
   // Job details table
