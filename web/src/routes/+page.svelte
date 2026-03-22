@@ -25,7 +25,10 @@
 	<!-- Nav -->
 	<nav class="fixed top-0 z-40 w-full backdrop-blur-md bg-void/70">
 		<div class="mx-auto flex h-14 max-w-[820px] items-center justify-between px-6">
-			<a href="/" class="font-display text-lg text-cream italic">overnight</a>
+			<a href="/" class="flex items-center gap-2">
+				<img src="/logo-option3-moon.png" alt="overnight" class="h-7 w-7 rounded" />
+				<span class="font-display text-lg text-cream italic">overnight</span>
+			</a>
 			<div class="flex items-center gap-5">
 				<a href="#profile" class="hidden sm:block text-[13px] text-cream-faint hover:text-cream transition-colors duration-300">Profile</a>
 				<a href="#how" class="hidden sm:block text-[13px] text-cream-faint hover:text-cream transition-colors duration-300">How it works</a>
@@ -44,8 +47,18 @@
 
 	<!-- ════════════ HERO ════════════ -->
 	<section class="relative flex min-h-svh flex-col items-center justify-center px-6 overflow-hidden">
+		<!-- Video background -->
 		<div class="absolute inset-0">
-			<div class="absolute left-1/2 top-[40%] -translate-x-1/2 -translate-y-1/2 h-[500px] w-[700px] rounded-full opacity-25" style="background: radial-gradient(ellipse, rgba(125,211,252,0.07) 0%, transparent 70%);"></div>
+			<video
+				autoplay
+				loop
+				muted
+				playsinline
+				class="absolute inset-0 h-full w-full object-cover opacity-30"
+			>
+				<source src="/hero_option3.mp4" type="video/mp4" />
+			</video>
+			<div class="absolute inset-0 bg-gradient-to-b from-void/40 via-void/60 to-void"></div>
 		</div>
 
 		<div class="relative z-10 mx-auto max-w-[820px] w-full text-center">
