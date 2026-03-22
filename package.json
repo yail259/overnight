@@ -1,6 +1,6 @@
 {
   "name": "@yail259/overnight",
-  "version": "1.0.0",
+  "version": "0.4.0",
   "description": "another you for when you're asleep — adaptive Claude Code message prediction",
   "type": "module",
   "bin": {

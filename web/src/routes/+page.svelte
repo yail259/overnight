@@ -298,6 +298,7 @@
 		<div class="mx-auto flex max-w-[820px] items-center justify-between px-6 py-6">
 			<span class="font-display text-sm italic text-cream-faint">overnight</span>
 			<div class="flex items-center gap-5">
+				<a href="https://www.npmjs.com/package/@yail259/overnight" target="_blank" rel="noopener noreferrer" class="font-mono text-[11px] text-cream-faint hover:text-cream transition-colors duration-300">npm</a>
 				<a href="https://github.com/yail259/overnight" target="_blank" rel="noopener noreferrer" class="font-mono text-[11px] text-cream-faint hover:text-cream transition-colors duration-300">GitHub</a>
 				<span class="font-mono text-[11px] text-cream-faint">MIT</span>
 			</div>
