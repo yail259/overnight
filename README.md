@@ -1,274 +1,120 @@
 # overnight
 
-Batch job runner for Claude Code. Queue tasks, run them unattended, get results. Designed for overnight/AFK use.
+**it learns how you think**
 
-## Features
+overnight builds a profile of your coding style from Claude Code sessions, then uses it to predict what you'd type next — and executes it while you sleep. Each prediction sees what the last one did and adapts.
 
-- **Crash Recovery** - Auto-checkpoints after each job. Use `overnight resume` to continue after interrupts.
-- **Retry Logic** - Auto-retries 3x on API/network errors with exponential backoff.
-- **Push Notifications** - `--notify` sends completion summary to ntfy.sh (free, no signup).
-- **Markdown Reports** - `-r report.md` generates a summary with status and next steps.
-- **Verification Loops** - Optionally runs a verification prompt after each task.
-- **Security Sandboxing** - Path sandboxing, deny patterns for sensitive files, max turns limit, audit logging.
+Not a batch queue. Not a task runner. A model of *you*.
 
-## Installation
+## How it works
 
-```bash
-# npm
-npm install -g overnight
+1. **You work normally** — overnight reads your `~/.claude/projects/` session files passively
+2. **Before bed** — run `overnight` to launch the interactive TUI, which suggests plans from your recent activity
+3. **While you sleep** — overnight predicts a message, executes via `claude -p`, observes the output, then predicts the next one
+4. **Morning** — `overnight log` shows what happened. Review the branch, merge what you like
 
-# bun
-bun install -g overnight
+## The profile
 
-# npx (no install)
-npx overnight run tasks.yaml
+This is what makes overnight different. It analyses your conversations and extracts:
+
+- **Communication style** — tone, message length, patterns (e.g. "terse, imperative, starts with verbs")
+- **Coding patterns** — languages, frameworks, preferences, things you avoid
+- **Values** — what you care about (e.g. "ship fast", "minimal abstractions")
+- **Current focus** — what you've been working on recently
+
+The predictor never sees raw conversations. It sees **WHO** (your profile), **WHERE** (your direction), and **WHAT** (your workspace). Three inputs, one output: the message you'd type next.
+
+## Adaptive prediction
+
+```
+predict message → execute via claude -p → observe output/diff/tests
+       ↑                                           ↓
+       └───────── feed results back ───────────────┘
 ```
 
-Requires Claude Code CLI installed and authenticated.
+Each prediction sees what actually happened — build errors, test failures, code changes — and adapts. The model decides what's next based on real results, not a stale plan.
 
-## Quick Start
+## Install
 
 ```bash
-# Create a tasks.yaml file
-overnight init
-
-# Edit with your tasks, then run
-overnight run tasks.yaml
-
-# Run with notifications and report
-overnight run tasks.yaml --notify -r report.md
+npm install -g @yail259/overnight
 ```
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `overnight run <file>` | Run jobs from YAML file |
-| `overnight resume <file>` | Resume interrupted run from checkpoint |
-| `overnight single "<prompt>"` | Run a single task directly |
-| `overnight init` | Create example tasks.yaml |
-
-## tasks.yaml Format
-
-```yaml
-defaults:
-  timeout_seconds: 300      # Per-task timeout (default: 300)
-  stall_timeout_seconds: 120  # No-activity timeout (default: 120)
-  verify: true              # Run verification pass (default: true)
-  allowed_tools:            # Whitelist tools (default: Read,Edit,Write,Glob,Grep)
-    - Read
-    - Edit
-    - Glob
-    - Grep
-
-tasks:
-  # Simple format
-  - "Fix the bug in auth.py"
-
-  # Detailed format
-  - prompt: "Add input validation"
-    timeout_seconds: 600
-    verify: false
-    allowed_tools: [Read, Edit, Bash, Glob, Grep]
-```
-
-## CLI Options
-
-### `overnight run`
-
-| Option | Description |
-|--------|-------------|
-| `-o, --output <file>` | Save results JSON |
-| `-r, --report <file>` | Generate markdown report |
-| `-s, --state-file <file>` | Custom checkpoint file |
-| `--notify` | Send push notification via ntfy.sh |
-| `--notify-topic <topic>` | ntfy.sh topic (default: overnight) |
-| `-q, --quiet` | Minimal output |
-| `--sandbox <dir>` | Restrict file access to directory |
-| `--max-turns <n>` | Max agent iterations (default: 100) |
-| `--audit-log <file>` | Log all file operations |
-| `--no-security` | Disable default deny patterns |
-
-### `overnight single`
-
-| Option | Description |
-|--------|-------------|
-| `-t, --timeout <secs>` | Timeout in seconds (default: 300) |
-| `--verify/--no-verify` | Run verification pass (default: true) |
-| `-T, --tools <tool...>` | Allowed tools (can specify multiple) |
-| `--sandbox <dir>` | Restrict file access to directory |
-| `--max-turns <n>` | Max agent iterations (default: 100) |
-| `--no-security` | Disable default deny patterns |
-
-## Example Workflows
-
-### Development: Run overnight, check in morning
-
 ```bash
-nohup overnight run tasks.yaml --notify -r report.md -o results.json > overnight.log 2>&1 &
+# Interactive mode — TUI with plan suggestions and streaming output
+overnight
+overnight --all          # show suggestions across all projects
+overnight --resume       # resume the last interrupted run
+
+# Headless — predict + execute with a specific intent
+overnight start "finish the auth flow and add tests"
+overnight start "refactor executor" --mode dont-stop --dry-run
+
+# Review results
+overnight log            # latest run
+overnight log --all      # all runs
+
+# Session history — see recent Claude Code messages
+overnight history
+overnight history --limit 50 --cwd /path/to/project
+
+# Profile — view/update your extracted coding profile
+overnight profile
+overnight profile --update
+
+# Stop a running session
+overnight stop
+
+# Configuration
+overnight config                          # show current config
+overnight config --set apiKey=sk-...      # set API key
+overnight config --set model=claude-opus-4-6  # change prediction model
+overnight config --set baseUrl=https://... # custom API endpoint
 ```
 
-### CI/CD: Run and fail if any task fails
+## Run modes
 
-```bash
-overnight run tasks.yaml -q
-```
-
-### Single task with Bash access
-
-```bash
-overnight single "Run tests and fix failures" -T Read -T Edit -T Bash -T Glob
-```
-
-### Resume after crash/interrupt
-
-```bash
-overnight resume tasks.yaml
-```
-
-## Push Notifications
-
-overnight uses [ntfy.sh](https://ntfy.sh) for push notifications - free, no signup required.
-
-```bash
-# Send to default topic
-overnight run tasks.yaml --notify
-
-# Send to custom topic
-overnight run tasks.yaml --notify --notify-topic my-overnight-jobs
-```
-
-To receive notifications:
-1. Install the ntfy app ([iOS](https://apps.apple.com/app/ntfy/id1625396347), [Android](https://play.google.com/store/apps/details?id=io.heckel.ntfy))
-2. Subscribe to your topic (default: `overnight`)
-3. Run with `--notify`
-
-## Crash Recovery
-
-overnight automatically saves state after each completed job to `.overnight-state.json`.
-
-If the run is interrupted (crash, Ctrl+C, network issues):
-
-```bash
-# Resume from last checkpoint
-overnight resume tasks.yaml
-
-# Resume with custom state file
-overnight resume tasks.yaml --state-file my-state.json
-```
-
-The state file is automatically deleted on successful completion.
-
-## Security
-
-overnight includes multiple layers of security to prevent rogue agents:
-
-### Tool Whitelisting
-
-By default, only safe file operations are allowed (no Bash):
-- `Read`, `Edit`, `Write`, `Glob`, `Grep`
-
-### Deny Patterns (Enabled by Default)
-
-Sensitive files are automatically blocked:
-- `.env`, `.env.*` - Environment secrets
-- `.git/config` - Git credentials
-- `*.key`, `*.pem`, `*.p12` - Private keys
-- `id_rsa*`, `id_ed25519*` - SSH keys
-- `.ssh/*`, `.aws/*` - Cloud credentials
-- `.npmrc`, `.netrc` - Auth tokens
-
-### Path Sandboxing
-
-Restrict agent to a specific directory:
-
-```bash
-overnight run tasks.yaml --sandbox ./src
-```
-
-Or in tasks.yaml:
-```yaml
-defaults:
-  security:
-    sandbox_dir: "./src"
-```
-
-### Max Turns Limit
-
-Prevent runaway agents with iteration limits:
-
-```bash
-overnight run tasks.yaml --max-turns 50
-```
-
-### Audit Logging
-
-Log all file operations:
-
-```bash
-overnight run tasks.yaml --audit-log overnight-audit.log
-```
-
-### Full Security Config Example
-
-```yaml
-defaults:
-  security:
-    sandbox_dir: "."
-    max_turns: 100
-    audit_log: "overnight-audit.log"
-    deny_patterns:
-      - "**/.env*"
-      - "**/*.key"
-      - "**/secrets.*"
-```
-
-### Disabling Security
-
-To run without deny patterns (not recommended):
-
-```bash
-overnight run tasks.yaml --no-security
-```
-
-## Exit Codes
-
-| Code | Meaning |
-|------|---------|
-| 0 | All tasks succeeded |
-| 1 | One or more tasks failed |
-
-## Files Created
-
-| File | Description |
+| Mode | What it does |
 |------|-------------|
-| `.overnight-state.json` | Checkpoint file (deleted on success) |
-| `report.md` | Summary report (if `-r` used) |
-| `results.json` | Full results (if `-o` used) |
+| **Stick to plan** | One sprint. Accomplish the stated goals, then stop. |
+| **Don't stop** | Continuous sprints. After primary goals, move to docs, tests, cleanup. Runs until the model says "nothing left" or you Ctrl+C. |
 
-## Job Statuses
+## Ambition levels
 
-| Status | Description |
-|--------|-------------|
-| `success` | Task completed successfully |
-| `failed` | Task encountered an error |
-| `timeout` | Task exceeded timeout |
-| `stalled` | Task had no activity for too long |
-| `verification_failed` | Verification found issues |
+- **safe** — low-risk continuations: tests, docs, cleanup, finishing near-done work
+- **normal** — natural next steps, pick up where you left off
+- **yolo** — bold features, refactors, ambitious improvements
 
-## Requirements
+## Config
 
-- Node.js 18+ or Bun
-- Claude Code CLI installed and authenticated
-- `@anthropic-ai/claude-agent-sdk` (installed automatically)
+Stored in `~/.overnight/config.json`. Runs stored in `~/.overnight/runs/`.
 
-## Building from Source
+Works with Anthropic and any compatible API (GLM, Minimax, Kimi, etc.).
+
+## Architecture
+
+```
+src/
+  cli.ts         — CLI entry (start, stop, log, history, profile, config)
+  types.ts       — Core types and constants
+  history.ts     — Extract messages from Claude Code session JSONL files
+  predictor.ts   — Profile + workspace + results → predicted messages (Anthropic API)
+  executor.ts    — Adaptive execution loop, single branch per run
+  interactive.ts — Interactive TUI orchestration (Anthropic SDK streaming + React Ink)
+  profile.ts     — User profile extraction from conversation history
+  ui/            — React Ink TUI components
+```
+
+## Building from source
 
 ```bash
 git clone https://github.com/yail259/overnight.git
 cd overnight
 bun install
-bun run compile  # Creates standalone binary
+bun run build     # Build to dist/
+bun run compile   # Create standalone binary
 ```
 
 ## License

@@ -1,244 +1,155 @@
-export interface SecurityConfig {
-  sandbox_dir?: string;        // All paths must be under this directory
-  deny_patterns?: string[];    // Block files matching these glob patterns
-  max_turns?: number;          // Max agent iterations (prevents runaway)
-  audit_log?: string;          // Path to audit log file
+/** Ambition level for plan suggestions */
+export type AmbitionLevel = "safe" | "normal" | "yolo";
+
+export const AMBITION_LEVELS: AmbitionLevel[] = ["safe", "normal", "yolo"];
+
+/** Run mode — stick to plan (one sprint) or don't stop (continuous) */
+export type RunMode = "stick-to-plan" | "dont-stop";
+
+/** User's current working direction — trajectory, not tasks */
+export interface UserDirection {
+  /** When this direction was extracted */
+  extractedAt: string;
+  /** The cwd this direction applies to */
+  cwd: string;
+  /** High-level area of focus — e.g. "auth system", "TUI polish" (NOT a task) */
+  area: string;
+  /** Kind of work — "building-new" | "refactoring" | "debugging" | "polishing" | "exploring" */
+  workType: string;
+  /** Architectural patterns/themes being pursued */
+  themes: string[];
+  /** Frustrations or improvement signals — NOT tasks */
+  tensions: string[];
+  /** What's gaining energy vs winding down */
+  momentum: string;
+  /** Files recently changed (from git, not conversation) */
+  recentlyTouched: string[];
 }
 
-export interface JobConfig {
-  id?: string;                // Stable task identifier for dependency references
-  depends_on?: string[];      // IDs of tasks that must complete before this one
-  prompt: string;
-  working_dir?: string;
-  timeout_seconds?: number;
-  stall_timeout_seconds?: number;
-  verify?: boolean;
-  verify_prompt?: string;
-  allowed_tools?: string[];
-  retry_count?: number;
-  retry_delay?: number;
-  security?: SecurityConfig;
-}
-
-export interface JobResult {
-  task: string;
-  status: "success" | "failed" | "timeout" | "stalled" | "verification_failed";
-  result?: string;
-  error?: string;
-  duration_seconds: number;
-  verified: boolean;
-  retries: number;
-}
-
-export interface InProgressTask {
-  hash: string;
-  prompt: string;
-  sessionId?: string;  // SDK session ID for resumption
-  startedAt: string;
-}
-
-export interface RunState {
-  completed: Record<string, JobResult>; // keyed by task hash
-  inProgress?: InProgressTask;          // currently running task
+/** A single user-typed message extracted from a Claude Code session */
+export interface UserMessage {
+  text: string;
   timestamp: string;
+  cwd: string;
+  gitBranch: string;
+  sessionId: string;
+  project: string; // derived from cwd
 }
 
-export interface TasksFile {
-  defaults?: {
-    timeout_seconds?: number;
-    stall_timeout_seconds?: number;
-    verify?: boolean;
-    verify_prompt?: string;
-    allowed_tools?: string[];
-    security?: SecurityConfig;
-  };
-  tasks: (string | JobConfig)[];
-}
-
-// --- Goal mode types ---
-
-export interface GoalConfig {
-  goal: string;                      // High-level objective
-  acceptance_criteria?: string[];    // What must be true for the goal to be met
-  verification_commands?: string[];  // Commands that must exit 0 (e.g. "npm test", "npm run build")
-  constraints?: string[];            // Things the agent should NOT do
-  max_iterations?: number;           // Hard cap on build loop iterations
-  convergence_threshold?: number;    // Stalled iterations before stopping (default: 3)
-  defaults?: TasksFile["defaults"];  // Same defaults as tasks.yaml
-}
-
-export interface IterationState {
-  iteration: number;
-  completed_items: string[];
-  remaining_items: string[];
-  known_issues: string[];
-  files_modified: string[];
-  agent_done: boolean;               // Did the agent self-report "done"?
-  timestamp: string;
-}
-
-export interface GateCheck {
+/** A discovered project with activity metadata */
+export interface ProjectInfo {
   name: string;
-  passed: boolean;
-  output: string;
+  cwd: string;
+  lastActive: Date;
+  sessionCount: number;
+  messageCount: number;
 }
 
-export interface GateResult {
-  passed: boolean;
-  checks: GateCheck[];
-  summary: string;
-  failures: string[];
-}
-
-export interface GoalRunState {
-  goal: string;
-  iterations: IterationState[];
-  gate_results: GateResult[];
-  status: "running" | "gate_passed" | "gate_failed" | "stalled" | "max_iterations";
-  timestamp: string;
-}
-
-// --- Constants ---
-
-export const DEFAULT_TOOLS = ["Read", "Edit", "Write", "Glob", "Grep"];
-export const DEFAULT_TIMEOUT = 300;
-export const DEFAULT_STALL_TIMEOUT = 120;
-export const DEFAULT_RETRY_COUNT = 3;
-export const DEFAULT_RETRY_DELAY = 5;
-export const DEFAULT_VERIFY_PROMPT = "Review what you just implemented. Check for correctness, completeness, and compile errors. Fix any issues you find.";
-export const DEFAULT_STATE_FILE = ".overnight-state.json";
-export const DEFAULT_GOAL_STATE_FILE = ".overnight-goal-state.json";
-export const DEFAULT_NTFY_TOPIC = "overnight";
-export const DEFAULT_MAX_TURNS = 100;
-export const DEFAULT_MAX_ITERATIONS = 20;
-export const DEFAULT_CONVERGENCE_THRESHOLD = 3;
-export const DEFAULT_DENY_PATTERNS = [
-  "**/.env",
-  "**/.env.*",
-  "**/.git/config",
-  "**/credentials*",
-  "**/*.key",
-  "**/*.pem",
-  "**/*.p12",
-  "**/id_rsa*",
-  "**/id_ed25519*",
-  "**/.ssh/*",
-  "**/.aws/*",
-  "**/.npmrc",
-  "**/.netrc",
-];
-
-// --- Agent types ---
-
-export interface AgentConfig {
-  name: string;
-  description?: string;
-  interval_seconds: number;
-  run_during_market_hours_only: boolean;
-  alpaca_key_id?: string;
-  alpaca_secret_key?: string;
-  paper_trading: boolean;
-  max_position_pct: number;
-  max_daily_loss_usd: number;
-  max_order_value_usd: number;
-  allowed_symbols?: string[];
-  model?: string;
-  max_turns_per_loop: number;
-  max_budget_usd_per_loop?: number;
-  state_file: string;
-  decisions_log: string;
-  notify?: boolean;
-  notify_topic?: string;
-}
-
-export interface AgentLoopState {
-  session_id?: string;
-  loop_count: number;
-  started_at: string;
-  last_run_at?: string;
-  daily_realized_pnl: number;
-  daily_pnl_date: string;
-  halted: boolean;
-  halt_reason?: string;
-}
-
-export interface TradeDecision {
-  timestamp: string;
-  loop: number;
-  action: "buy" | "sell" | "hold";
-  symbol?: string;
-  qty?: number;
+/** A predicted message to send to Claude Code */
+export interface PredictedMessage {
+  message: string;
   reasoning: string;
-  market_context: string;
-  portfolio_summary: string;
-  order_id?: string;
+  confidence: number; // 0-1
 }
 
-// --- Evolve types ---
-
-export interface EvolveConfig {
-  name: string;
-  description?: string;
-  project_dir: string;
-  interval_seconds: number;
-  max_cycles?: number;
-  model?: string;
-  max_turns_per_phase?: number;
-  roadmap_file?: string;
-  focus_areas?: string[];
-  branch_prefix: string;
-  auto_pr: boolean;
-  base_branch: string;
-  protected_files?: string[];
-  protected_patterns?: string[];
-  max_files_per_cycle?: number;
-  max_lines_changed_per_cycle?: number;
-  state_file: string;
-  history_log: string;
-  notify?: boolean;
-  notify_topic?: string;
-}
-
-export interface EvolvePlan {
-  improvement_type: "bug_fix" | "refactor" | "test" | "feature" | "performance";
-  title: string;
+/** A suggested overnight plan (from auto mode) */
+export interface SuggestedPlan {
+  intent: string;
   description: string;
-  files_to_modify: string[];
-  verification_commands: string[];
-  risk_assessment: string;
+  project: string; // which project/cwd this applies to
+  cwd: string;
+  estimatedMessages: number;
 }
 
-export interface EvolveVerifyResult {
-  all_passed: boolean;
-  build_passed: boolean;
-  tests_passed: boolean;
-  issues_found: string[];
-}
-
-export interface EvolveCycleResult {
-  cycle: number;
+/** Result of executing a single predicted message */
+export interface ExecutionResult {
+  message: string;
+  branch: string;
+  exitCode: number;
+  output: string; // last 5KB of stream-json output
+  diff: string; // git diff --stat after execution
+  testsPass: boolean;
+  buildPass: boolean;
+  costUsd: number;
+  durationSeconds: number;
   timestamp: string;
-  phase_reached: "observe" | "plan" | "execute" | "verify" | "propose";
-  plan_summary: string;
-  files_changed: string[];
-  branch_name?: string;
-  pr_url?: string;
-  verify_passed: boolean;
-  error?: string;
-  duration_seconds: number;
-  cost_usd: number;
 }
 
-export interface EvolveState {
-  session_id?: string;
-  cycle_count: number;
-  started_at: string;
-  last_run_at?: string;
-  completed_cycles: EvolveCycleResult[];
-  current_cycle?: {
-    cycle: number;
-    phase: string;
-    branch_name?: string;
-    plan?: EvolvePlan;
-  };
+/** Context fed back to the predictor for adaptive prediction */
+export interface AdaptiveContext {
+  /** Steps completed so far in this run */
+  completedSteps: {
+    message: string;
+    output: string;
+    diff: string;
+    exitCode: number;
+    testsPass: boolean;
+    buildPass: boolean;
+  }[];
+  /** Run mode */
+  mode: RunMode;
+  /** Ambition level */
+  ambition: AmbitionLevel;
+  /** High-level goals from the preview/plan */
+  goals?: string[];
+  /** User's current direction — extracted once at run start */
+  direction?: UserDirection;
 }
+
+/** A complete overnight run */
+export interface OvernightRun {
+  id: string;
+  intent: string;
+  startedAt: string;
+  finishedAt?: string;
+  cwd: string;
+  baseBranch: string;
+  branch: string; // overnight/{run-id} — single branch for all messages
+  mode: RunMode;
+  predictions: PredictedMessage[]; // grows as adaptive loop adds predictions
+  results: ExecutionResult[];
+  status: "running" | "completed" | "stopped" | "failed";
+}
+
+/** Config stored in ~/.overnight/config.json */
+export interface OvernightConfig {
+  claudeBin: string; // path to claude CLI
+  maxMessages: number; // max predicted messages per run (safety cap)
+  model: string; // model for prediction
+  apiKey: string; // API key (or set ANTHROPIC_API_KEY env)
+  baseUrl: string; // custom base URL (e.g. for proxy or gateway)
+}
+
+export const DEFAULT_CONFIG: OvernightConfig = {
+  claudeBin: "claude",
+  maxMessages: 20, // higher cap since adaptive loop self-terminates
+  model: "claude-sonnet-4-6",
+  apiKey: "",
+  baseUrl: "",
+};
+
+/** Live run state for the TUI status bar */
+export interface RunState {
+  status: "starting" | "running" | "completed" | "failed" | "stopped";
+  runId: string;
+  total: number; // grows dynamically with adaptive prediction
+  current: number; // 0-indexed, which message is executing now
+  currentMessage?: string; // preview of current message
+  passed: number;
+  failed: number;
+  elapsed: number; // seconds
+  startedAt: number; // Date.now() when run started
+  mode: RunMode;
+}
+
+/** Pending approval prompt after preview_run */
+export interface PendingApproval {
+  intent: string;
+  cwd: string;
+  goals: string[];
+}
+
+export const OVERNIGHT_DIR = `${process.env.HOME}/.overnight`;
+export const RUNS_DIR = `${OVERNIGHT_DIR}/runs`;
+export const CONFIG_FILE = `${OVERNIGHT_DIR}/config.json`;
+export const PID_FILE = `${OVERNIGHT_DIR}/overnight.pid`;

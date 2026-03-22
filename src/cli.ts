@@ -1,930 +1,436 @@
 #!/usr/bin/env node
+/**
+ * overnight CLI — another you for when you're asleep.
+ *
+ * Commands:
+ *   overnight                 — interactive chat (default)
+ *   overnight start "intent"  — adaptive prediction + execution on a single branch
+ *   overnight stop            — stop a running overnight session
+ *   overnight log             — show results of the latest run
+ *   overnight profile         — show/update your user profile
+ *   overnight config          — show/set configuration
+ */
+
 import { Command } from "commander";
-import { readFileSync, writeFileSync, existsSync } from "fs";
-import { parse as parseYaml } from "yaml";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from "fs";
+import { join, basename } from "path";
 import {
-  type JobConfig,
-  type JobResult,
-  type TasksFile,
-  type GoalConfig,
-  type SecurityConfig,
-  type AgentConfig,
-  type EvolveConfig,
-  DEFAULT_TOOLS,
-  DEFAULT_TIMEOUT,
-  DEFAULT_STALL_TIMEOUT,
-  DEFAULT_VERIFY_PROMPT,
-  DEFAULT_STATE_FILE,
-  DEFAULT_GOAL_STATE_FILE,
-  DEFAULT_NTFY_TOPIC,
-  DEFAULT_MAX_TURNS,
-  DEFAULT_MAX_ITERATIONS,
-  DEFAULT_DENY_PATTERNS,
+  type OvernightConfig,
+  type OvernightRun,
+  type RunMode,
+  DEFAULT_CONFIG,
+  OVERNIGHT_DIR,
+  RUNS_DIR,
+  CONFIG_FILE,
+  PID_FILE,
 } from "./types.js";
-import { validateSecurityConfig } from "./security.js";
-import {
-  runJob,
-  runJobsWithState,
-  loadState,
-  resultsToJson,
-  taskKey,
-} from "./runner.js";
-import { sendNtfyNotification } from "./notify.js";
-import { generateReport } from "./report.js";
-import { runGoal, parseGoalFile } from "./goal-runner.js";
-import { runPlanner } from "./planner.js";
-import { runAgentLoop } from "./agent/index.js";
-import { runEvolveLoop } from "./evolve/index.js";
+import { predictMessages } from "./predictor.js";
+import { executeAll, getLatestRun } from "./executor.js";
+import { getMessagesForCwd, getAllMessages, getMessageSummary } from "./history.js";
+import type { AmbitionLevel } from "./types.js";
+import { runInteractive } from "./interactive.js";
+import { loadProfile, updateProfile, profileToPromptContext } from "./profile.js";
+import { createInterface } from "readline";
 
-const AGENT_HELP = `
-# overnight - Autonomous Build Runner for Claude Code
+// ── Helpers ──────────────────────────────────────────────────────────
 
-Two modes: goal-driven autonomous loops, or task-list batch jobs.
-
-## Quick Start
-
-\`\`\`bash
-# Hammer mode: just give it a goal and go
-overnight hammer "Build a multiplayer MMO"
-
-# Or: design session first, then autonomous build
-overnight plan "Build a multiplayer game"   # Interactive design → goal.yaml
-overnight run goal.yaml --notify            # Autonomous build loop
-
-# Task mode: explicit task list
-overnight run tasks.yaml --notify
-\`\`\`
-
-## Commands
-
-| Command | Description |
-|---------|-------------|
-| \`overnight hammer "<goal>"\` | Autonomous build loop from a string |
-| \`overnight plan "<goal>"\` | Interactive design session → goal.yaml |
-| \`overnight run <file>\` | Run goal.yaml (loop) or tasks.yaml (batch) |
-| \`overnight resume <file>\` | Resume interrupted run from checkpoint |
-| \`overnight single "<prompt>"\` | Run a single task directly |
-| \`overnight init\` | Create example goal.yaml or tasks.yaml |
-
-## Goal Mode (goal.yaml)
-
-Autonomous convergence loop: agent iterates toward a goal, then a separate
-gate agent verifies everything before declaring done.
-
-\`\`\`yaml
-goal: "Build a clone of Flappy Bird with leaderboard"
-
-acceptance_criteria:
-  - "Game renders and is playable in browser"
-  - "Leaderboard persists scores to localStorage"
-
-verification_commands:
-  - "npm run build"
-  - "npm test"
-
-constraints:
-  - "Use vanilla JS, no frameworks"
-
-max_iterations: 15
-\`\`\`
-
-## Task Mode (tasks.yaml)
-
-Explicit task list with optional dependency DAG.
-
-\`\`\`yaml
-defaults:
-  timeout_seconds: 300
-  verify: true
-  allowed_tools: [Read, Edit, Write, Glob, Grep]
-
-tasks:
-  - "Fix the bug in auth.py"
-  - prompt: "Add input validation"
-    timeout_seconds: 600
-\`\`\`
-
-## Key Options
-
-| Option | Description |
-|--------|-------------|
-| \`-o, --output <file>\` | Save results JSON |
-| \`-r, --report <file>\` | Generate markdown report |
-| \`-s, --state-file <file>\` | Custom checkpoint file |
-| \`--max-iterations <n>\` | Max build loop iterations (goal mode) |
-| \`--notify\` | Send push notification via ntfy.sh |
-| \`-q, --quiet\` | Minimal output |
-
-## Example Workflows
-
-\`\`\`bash
-# Simplest: just hammer a goal overnight
-nohup overnight hammer "Build a REST API with auth and tests" --notify > overnight.log 2>&1 &
-
-# Design first, then run
-overnight plan "Build a REST API with auth"
-nohup overnight run goal.yaml --notify > overnight.log 2>&1 &
-
-# Batch tasks overnight
-nohup overnight run tasks.yaml --notify -r report.md > overnight.log 2>&1 &
-
-# Resume after crash
-overnight resume goal.yaml
-\`\`\`
-
-## Exit Codes
-
-- 0: All tasks succeeded / gate passed
-- 1: Failures occurred / gate failed
-
-## Files Created
-
-- \`.overnight-goal-state.json\` - Goal mode checkpoint
-- \`.overnight-iterations/\` - Per-iteration state + summaries
-- \`.overnight-state.json\` - Task mode checkpoint
-- \`report.md\` - Summary report (if -r used)
-
-Run \`overnight <command> --help\` for command-specific options.
-`;
-
-// --- File type detection ---
-
-function isGoalFile(path: string): boolean {
-  try {
-    const content = readFileSync(path, "utf-8");
-    const data = parseYaml(content) as Record<string, unknown>;
-    return typeof data?.goal === "string";
-  } catch {
-    return false;
-  }
-}
-
-interface ParsedConfig {
-  configs: JobConfig[];
-  security?: SecurityConfig;
-}
-
-function parseTasksFile(path: string, cliSecurity?: Partial<SecurityConfig>): ParsedConfig {
-  const content = readFileSync(path, "utf-8");
-  let data: TasksFile | (string | JobConfig)[];
-  try {
-    data = parseYaml(content) as TasksFile | (string | JobConfig)[];
-  } catch (e) {
-    const error = e as Error;
-    console.error(`\x1b[31mError parsing ${path}:\x1b[0m`);
-    console.error(`  ${error.message.split('\n')[0]}`);
-    process.exit(1);
-  }
-
-  const tasks = Array.isArray(data) ? data : data.tasks ?? [];
-  const defaults = Array.isArray(data) ? {} : data.defaults ?? {};
-
-  // Merge CLI security options with file security options (CLI takes precedence)
-  const fileSecurity = (!Array.isArray(data) && data.defaults?.security) || {};
-  const security: SecurityConfig | undefined = (cliSecurity || Object.keys(fileSecurity).length > 0)
-    ? {
-        ...fileSecurity,
-        ...cliSecurity,
-        // Use default deny patterns if none specified
-        deny_patterns: cliSecurity?.deny_patterns ?? fileSecurity.deny_patterns ?? DEFAULT_DENY_PATTERNS,
-      }
-    : undefined;
-
-  const configs = tasks.map((task) => {
-    if (typeof task === "string") {
-      return {
-        prompt: task,
-        timeout_seconds: defaults.timeout_seconds ?? DEFAULT_TIMEOUT,
-        stall_timeout_seconds:
-          defaults.stall_timeout_seconds ?? DEFAULT_STALL_TIMEOUT,
-        verify: defaults.verify ?? true,
-        verify_prompt: defaults.verify_prompt ?? DEFAULT_VERIFY_PROMPT,
-        allowed_tools: defaults.allowed_tools,
-        security,
-      };
+function loadConfig(): OvernightConfig {
+  if (existsSync(CONFIG_FILE)) {
+    try {
+      const raw = JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+      return { ...DEFAULT_CONFIG, ...raw };
+    } catch {
+      return { ...DEFAULT_CONFIG };
     }
-    return {
-      id: task.id ?? undefined,
-      depends_on: task.depends_on ?? undefined,
-      prompt: task.prompt,
-      working_dir: task.working_dir ?? undefined,
-      timeout_seconds:
-        task.timeout_seconds ?? defaults.timeout_seconds ?? DEFAULT_TIMEOUT,
-      stall_timeout_seconds:
-        task.stall_timeout_seconds ??
-        defaults.stall_timeout_seconds ??
-        DEFAULT_STALL_TIMEOUT,
-      verify: task.verify ?? defaults.verify ?? true,
-      verify_prompt:
-        task.verify_prompt ?? defaults.verify_prompt ?? DEFAULT_VERIFY_PROMPT,
-      allowed_tools: task.allowed_tools ?? defaults.allowed_tools,
-      security: task.security ?? security,
-    };
-  });
-
-  return { configs, security };
+  }
+  return { ...DEFAULT_CONFIG };
 }
 
-function printSummary(results: JobResult[]): void {
-  const statusColors: Record<string, string> = {
-    success: "\x1b[32m",
-    failed: "\x1b[31m",
-    timeout: "\x1b[33m",
-    stalled: "\x1b[35m",
-    verification_failed: "\x1b[33m",
-  };
-  const reset = "\x1b[0m";
-  const bold = "\x1b[1m";
-
-  console.log(`\n${bold}Job Results${reset}`);
-  console.log("─".repeat(70));
-
-  results.forEach((r, i) => {
-    const color = statusColors[r.status] ?? "";
-    const task = r.task.length > 40 ? r.task.slice(0, 40) + "..." : r.task;
-    const verified = r.verified ? "✓" : "✗";
-    console.log(
-      `${i + 1}. ${color}${r.status.padEnd(12)}${reset} ${r.duration_seconds.toFixed(1).padStart(6)}s  ${verified}  ${task}`
-    );
-  });
-
-  const succeeded = results.filter((r) => r.status === "success").length;
-  console.log(
-    `\n${bold}Summary:${reset} ${succeeded}/${results.length} succeeded`
-  );
+function saveConfig(config: OvernightConfig): void {
+  mkdirSync(OVERNIGHT_DIR, { recursive: true });
+  writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
 }
+
+function generateRunId(): string {
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10).replace(/-/g, "");
+  const time = now.toISOString().slice(11, 16).replace(":", "");
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `${date}-${time}-${rand}`;
+}
+
+function getCurrentBranch(cwd: string): string {
+  try {
+    const { execSync } = require("child_process");
+    return execSync("git rev-parse --abbrev-ref HEAD", { cwd, stdio: "pipe" })
+      .toString()
+      .trim();
+  } catch {
+    return "main";
+  }
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+function statusIcon(result: { exitCode: number; testsPass: boolean; buildPass: boolean }): string {
+  if (result.exitCode !== 0) return "✗";
+  if (!result.buildPass) return "⚠";
+  if (!result.testsPass) return "⚠";
+  return "✓";
+}
+
+// ── Commands ─────────────────────────────────────────────────────────
 
 const program = new Command();
 
 program
   .name("overnight")
-  .description("Batch job runner for Claude Code")
-  .version("0.3.0")
-  .action(() => {
-    console.log(AGENT_HELP);
-  });
+  .description("another you for when you're asleep — adaptive Claude Code message prediction")
+  .version("1.0.0");
+
+// ── start ────────────────────────────────────────────────────────────
 
 program
-  .command("run")
-  .description("Run goal.yaml (autonomous loop) or tasks.yaml (batch jobs)")
-  .argument("<file>", "Path to goal.yaml or tasks.yaml")
-  .option("-o, --output <file>", "Output file for results JSON")
-  .option("-q, --quiet", "Minimal output")
-  .option("-s, --state-file <file>", "Custom state file path")
-  .option("--notify", "Send push notification via ntfy.sh")
-  .option("--notify-topic <topic>", "ntfy.sh topic", DEFAULT_NTFY_TOPIC)
-  .option("-r, --report <file>", "Generate markdown report")
-  .option("--sandbox <dir>", "Sandbox directory (restrict file access)")
-  .option("--max-turns <n>", "Max agent iterations per task", String(DEFAULT_MAX_TURNS))
-  .option("--max-iterations <n>", "Max build loop iterations (goal mode)", String(DEFAULT_MAX_ITERATIONS))
-  .option("--audit-log <file>", "Audit log file path")
-  .option("--no-security", "Disable default security (deny patterns)")
-  .action(async (inputFile, opts) => {
-    if (!existsSync(inputFile)) {
-      console.error(`Error: File not found: ${inputFile}`);
+  .command("start")
+  .argument("<intent>", "What you want accomplished overnight")
+  .option("-m, --mode <mode>", "Run mode: stick-to-plan or dont-stop", "stick-to-plan")
+  .option("-d, --dry-run", "Predict messages but don't execute them")
+  .option("--cwd <dir>", "Working directory", process.cwd())
+  .action(async (intent: string, opts: { mode: string; dryRun?: boolean; cwd: string }) => {
+    const config = loadConfig();
+    const mode: RunMode = opts.mode === "dont-stop" ? "dont-stop" : "stick-to-plan";
+
+    const cwd = opts.cwd;
+    const modeLabel = mode === "stick-to-plan" ? "Stick to plan" : "Don't stop";
+    console.log(`\n  overnight — another you for when you're asleep`);
+    console.log(`  intent: "${intent}"`);
+    console.log(`  mode: ${modeLabel}`);
+    console.log(`  cwd: ${cwd}\n`);
+
+    // Step 1: Predict initial goals
+    console.log("  Predicting goals...\n");
+    let predictions;
+    try {
+      predictions = await predictMessages(intent, cwd, config);
+    } catch (err: any) {
+      console.error(`  Error predicting messages: ${err.message}`);
       process.exit(1);
     }
 
-    // Detect file type and dispatch
-    if (isGoalFile(inputFile)) {
-      // --- Goal mode ---
-      const goal = parseGoalFile(inputFile);
-
-      // Apply CLI overrides
-      if (opts.maxIterations) {
-        goal.max_iterations = parseInt(opts.maxIterations, 10);
-      }
-      if (opts.sandbox) {
-        goal.defaults = goal.defaults ?? {};
-        goal.defaults.security = goal.defaults.security ?? {};
-        goal.defaults.security.sandbox_dir = opts.sandbox;
-      }
-      if (opts.maxTurns) {
-        goal.defaults = goal.defaults ?? {};
-        goal.defaults.security = goal.defaults.security ?? {};
-        goal.defaults.security.max_turns = parseInt(opts.maxTurns, 10);
-      }
-
-      const log = opts.quiet ? undefined : (msg: string) => console.log(msg);
-      const startTime = Date.now();
-
-      const runState = await runGoal(goal, {
-        stateFile: opts.stateFile ?? DEFAULT_GOAL_STATE_FILE,
-        log,
-      });
-
-      const totalDuration = (Date.now() - startTime) / 1000;
-
-      if (opts.notify) {
-        const passed = runState.status === "gate_passed";
-        const title = passed
-          ? `overnight: Goal completed (${runState.iterations.length} iterations)`
-          : `overnight: ${runState.status} after ${runState.iterations.length} iterations`;
-        const message = passed
-          ? `Gate passed. ${runState.iterations.length} iterations.`
-          : `Status: ${runState.status}. Check report for details.`;
-
-        try {
-          await fetch(`https://ntfy.sh/${opts.notifyTopic ?? DEFAULT_NTFY_TOPIC}`, {
-            method: "POST",
-            headers: {
-              Title: title,
-              Priority: passed ? "default" : "high",
-              Tags: passed ? "white_check_mark" : "warning",
-            },
-            body: message,
-          });
-          if (!opts.quiet) console.log(`\x1b[2mNotification sent\x1b[0m`);
-        } catch {
-          if (!opts.quiet) console.log("\x1b[33mWarning: Failed to send notification\x1b[0m");
-        }
-      }
-
-      // Print summary
-      if (!opts.quiet) {
-        console.log(`\n\x1b[1m━━━ Goal Run Summary ━━━\x1b[0m`);
-        console.log(`Status: ${runState.status === "gate_passed" ? "\x1b[32m" : "\x1b[31m"}${runState.status}\x1b[0m`);
-        console.log(`Iterations: ${runState.iterations.length}`);
-        console.log(`Gate attempts: ${runState.gate_results.length}`);
-
-        // Duration formatting
-        let durationStr: string;
-        if (totalDuration >= 3600) {
-          const hours = Math.floor(totalDuration / 3600);
-          const mins = Math.floor((totalDuration % 3600) / 60);
-          durationStr = `${hours}h ${mins}m`;
-        } else if (totalDuration >= 60) {
-          const mins = Math.floor(totalDuration / 60);
-          const secs = Math.floor(totalDuration % 60);
-          durationStr = `${mins}m ${secs}s`;
-        } else {
-          durationStr = `${totalDuration.toFixed(1)}s`;
-        }
-        console.log(`Duration: ${durationStr}`);
-
-        if (runState.gate_results.length > 0) {
-          const lastGate = runState.gate_results[runState.gate_results.length - 1];
-          console.log(`\nGate: ${lastGate.summary}`);
-          for (const check of lastGate.checks) {
-            const icon = check.passed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
-            console.log(`  ${icon} ${check.name}`);
-          }
-        }
-      }
-
-      if (runState.status !== "gate_passed") {
-        process.exit(1);
-      }
-    } else {
-      // --- Task mode (legacy) ---
-      const cliSecurity: Partial<SecurityConfig> | undefined = opts.security === false
-        ? undefined
-        : {
-            ...(opts.sandbox && { sandbox_dir: opts.sandbox }),
-            ...(opts.maxTurns && { max_turns: parseInt(opts.maxTurns, 10) }),
-            ...(opts.auditLog && { audit_log: opts.auditLog }),
-          };
-
-      const { configs, security } = parseTasksFile(inputFile, cliSecurity);
-      if (configs.length === 0) {
-        console.error("No tasks found in file");
-        process.exit(1);
-      }
-
-      const existingState = loadState(opts.stateFile ?? DEFAULT_STATE_FILE);
-      if (existingState) {
-        const done = Object.keys(existingState.completed).length;
-        const pending = configs.filter(c => !(taskKey(c) in existingState.completed)).length;
-        console.log(`\x1b[1movernight: Resuming — ${done} done, ${pending} remaining\x1b[0m`);
-        console.log(`\x1b[2mLast checkpoint: ${existingState.timestamp}\x1b[0m`);
-      } else {
-        console.log(`\x1b[1movernight: Running ${configs.length} jobs...\x1b[0m`);
-      }
-
-      if (security && !opts.quiet) {
-        console.log("\x1b[2mSecurity:\x1b[0m");
-        validateSecurityConfig(security);
-      }
-      console.log("");
-
-      const log = opts.quiet ? undefined : (msg: string) => console.log(msg);
-      const startTime = Date.now();
-      const reloadConfigs = () => parseTasksFile(inputFile, cliSecurity).configs;
-
-      const results = await runJobsWithState(configs, {
-        stateFile: opts.stateFile,
-        log,
-        reloadConfigs,
-      });
-
-      const totalDuration = (Date.now() - startTime) / 1000;
-
-      if (opts.notify) {
-        const success = await sendNtfyNotification(results, totalDuration, opts.notifyTopic);
-        if (success) {
-          console.log(`\x1b[2mNotification sent to ntfy.sh/${opts.notifyTopic}\x1b[0m`);
-        } else {
-          console.log("\x1b[33mWarning: Failed to send notification\x1b[0m");
-        }
-      }
-
-      if (opts.report) {
-        generateReport(results, totalDuration, opts.report);
-        console.log(`\x1b[2mReport saved to ${opts.report}\x1b[0m`);
-      }
-
-      if (!opts.quiet) {
-        printSummary(results);
-      }
-
-      if (opts.output) {
-        writeFileSync(opts.output, resultsToJson(results));
-        console.log(`\n\x1b[2mResults saved to ${opts.output}\x1b[0m`);
-      }
-
-      if (results.some((r) => r.status !== "success")) {
-        process.exit(1);
-      }
-    }
-  });
-
-program
-  .command("resume")
-  .description("Resume a previous run from saved state")
-  .argument("<tasks-file>", "Path to tasks.yaml file")
-  .option("-o, --output <file>", "Output file for results JSON")
-  .option("-q, --quiet", "Minimal output")
-  .option("-s, --state-file <file>", "Custom state file path")
-  .option("--notify", "Send push notification via ntfy.sh")
-  .option("--notify-topic <topic>", "ntfy.sh topic", DEFAULT_NTFY_TOPIC)
-  .option("-r, --report <file>", "Generate markdown report")
-  .option("--sandbox <dir>", "Sandbox directory (restrict file access)")
-  .option("--max-turns <n>", "Max agent iterations per task", String(DEFAULT_MAX_TURNS))
-  .option("--audit-log <file>", "Audit log file path")
-  .option("--no-security", "Disable default security (deny patterns)")
-  .action(async (tasksFile, opts) => {
-    const stateFile = opts.stateFile ?? DEFAULT_STATE_FILE;
-    const state = loadState(stateFile);
-
-    if (!state) {
-      console.error(`No state file found at ${stateFile}`);
-      console.error("Run 'overnight run' first to start jobs.");
-      process.exit(1);
+    if (predictions.length === 0) {
+      console.log("  No messages predicted. Nothing to do.");
+      process.exit(0);
     }
 
-    if (!existsSync(tasksFile)) {
-      console.error(`Error: File not found: ${tasksFile}`);
-      process.exit(1);
+    // Show goals
+    for (let i = 0; i < predictions.length; i++) {
+      const p = predictions[i];
+      const conf = Math.round(p.confidence * 100);
+      console.log(`  ${i + 1}. [${conf}%] ${p.message}`);
+      console.log(`     ${p.reasoning}\n`);
     }
 
-    // Build CLI security config
-    const cliSecurity: Partial<SecurityConfig> | undefined = opts.security === false
-      ? undefined
-      : {
-          ...(opts.sandbox && { sandbox_dir: opts.sandbox }),
-          ...(opts.maxTurns && { max_turns: parseInt(opts.maxTurns, 10) }),
-          ...(opts.auditLog && { audit_log: opts.auditLog }),
-        };
-
-    const { configs, security } = parseTasksFile(tasksFile, cliSecurity);
-    if (configs.length === 0) {
-      console.error("No tasks found in file");
-      process.exit(1);
+    if (opts.dryRun) {
+      console.log("  Dry run — not executing.");
+      process.exit(0);
     }
 
-    const completedCount = Object.keys(state.completed).length;
-    const pendingCount = configs.filter(c => !(taskKey(c) in state.completed)).length;
-    console.log(
-      `\x1b[1movernight: Resuming — ${completedCount} done, ${pendingCount} remaining\x1b[0m`
-    );
-    console.log(`\x1b[2mLast checkpoint: ${state.timestamp}\x1b[0m`);
+    // Step 2: Execute adaptively
+    const runId = generateRunId();
+    const baseBranch = getCurrentBranch(cwd);
+    const branchName = `overnight/${runId}`;
 
-    // Show security config if enabled
-    if (security && !opts.quiet) {
-      console.log("\x1b[2mSecurity:\x1b[0m");
-      validateSecurityConfig(security);
-    }
-    console.log("");
-
-    const log = opts.quiet ? undefined : (msg: string) => console.log(msg);
-    const startTime = Date.now();
-    const reloadConfigs = () => parseTasksFile(tasksFile, cliSecurity).configs;
-
-    const results = await runJobsWithState(configs, {
-      stateFile,
-      log,
-      reloadConfigs,
-    });
-
-    const totalDuration = (Date.now() - startTime) / 1000;
-
-    if (opts.notify) {
-      const success = await sendNtfyNotification(
-        results,
-        totalDuration,
-        opts.notifyTopic
-      );
-      if (success) {
-        console.log(`\x1b[2mNotification sent to ntfy.sh/${opts.notifyTopic}\x1b[0m`);
-      } else {
-        console.log("\x1b[33mWarning: Failed to send notification\x1b[0m");
-      }
-    }
-
-    if (opts.report) {
-      generateReport(results, totalDuration, opts.report);
-      console.log(`\x1b[2mReport saved to ${opts.report}\x1b[0m`);
-    }
-
-    if (!opts.quiet) {
-      printSummary(results);
-    }
-
-    if (opts.output) {
-      writeFileSync(opts.output, resultsToJson(results));
-      console.log(`\n\x1b[2mResults saved to ${opts.output}\x1b[0m`);
-    }
-
-    if (results.some((r) => r.status !== "success")) {
-      process.exit(1);
-    }
-  });
-
-program
-  .command("single")
-  .description("Run a single job directly")
-  .argument("<prompt>", "The task prompt")
-  .option("-t, --timeout <seconds>", "Timeout in seconds", "300")
-  .option("--verify", "Run verification pass", true)
-  .option("--no-verify", "Skip verification pass")
-  .option("-T, --tools <tool...>", "Allowed tools")
-  .option("--sandbox <dir>", "Sandbox directory (restrict file access)")
-  .option("--max-turns <n>", "Max agent iterations", String(DEFAULT_MAX_TURNS))
-  .option("--no-security", "Disable default security (deny patterns)")
-  .action(async (prompt, opts) => {
-    // Build security config
-    const security: SecurityConfig | undefined = opts.security === false
-      ? undefined
-      : {
-          ...(opts.sandbox && { sandbox_dir: opts.sandbox }),
-          ...(opts.maxTurns && { max_turns: parseInt(opts.maxTurns, 10) }),
-          deny_patterns: DEFAULT_DENY_PATTERNS,
-        };
-
-    const config: JobConfig = {
-      prompt,
-      timeout_seconds: parseInt(opts.timeout, 10),
-      verify: opts.verify,
-      allowed_tools: opts.tools,
-      security,
+    const run: OvernightRun = {
+      id: runId,
+      intent,
+      startedAt: new Date().toISOString(),
+      cwd,
+      baseBranch,
+      branch: branchName,
+      mode,
+      predictions: [predictions[0]], // start with first
+      results: [],
+      status: "running",
     };
 
-    const log = (msg: string) => console.log(msg);
-    const result = await runJob(config, log);
+    // Save run file + PID
+    mkdirSync(RUNS_DIR, { recursive: true });
+    writeFileSync(join(RUNS_DIR, `${runId}.json`), JSON.stringify(run, null, 2));
+    writeFileSync(PID_FILE, String(process.pid));
 
-    if (result.status === "success") {
-      console.log("\n\x1b[32mSuccess\x1b[0m");
-      if (result.result) {
-        console.log(result.result);
-      }
-    } else {
-      console.log(`\n\x1b[31m${result.status}\x1b[0m`);
-      if (result.error) {
-        console.log(`\x1b[31m${result.error}\x1b[0m`);
-      }
-      process.exit(1);
-    }
-  });
+    console.log(`  Starting adaptive run (${runId})...\n`);
 
-program
-  .command("hammer")
-  .description("Autonomous build loop from an inline goal string")
-  .argument("<goal>", "The goal to work toward")
-  .option("--max-iterations <n>", "Max build loop iterations", String(DEFAULT_MAX_ITERATIONS))
-  .option("--max-turns <n>", "Max agent turns per iteration", String(DEFAULT_MAX_TURNS))
-  .option("-t, --timeout <seconds>", "Timeout per iteration in seconds", "600")
-  .option("-T, --tools <tool...>", "Allowed tools")
-  .option("--sandbox <dir>", "Sandbox directory")
-  .option("-s, --state-file <file>", "Custom state file path")
-  .option("--notify", "Send push notification via ntfy.sh")
-  .option("--notify-topic <topic>", "ntfy.sh topic", DEFAULT_NTFY_TOPIC)
-  .option("-q, --quiet", "Minimal output")
-  .option("--no-security", "Disable default security")
-  .action(async (goalStr, opts) => {
-    const goal: GoalConfig = {
-      goal: goalStr,
-      max_iterations: parseInt(opts.maxIterations, 10),
-      defaults: {
-        timeout_seconds: parseInt(opts.timeout, 10),
-        allowed_tools: opts.tools ?? [...DEFAULT_TOOLS, "Bash"],
-        security: opts.security === false
-          ? undefined
-          : {
-              ...(opts.sandbox && { sandbox_dir: opts.sandbox }),
-              max_turns: parseInt(opts.maxTurns, 10),
-              deny_patterns: DEFAULT_DENY_PATTERNS,
-            },
+    await executeAll(run, config, {
+      onStart: (prediction, index) => {
+        console.log(`  → Step ${index + 1}: ${prediction.message.slice(0, 70)}...`);
       },
-    };
-
-    const log = opts.quiet ? undefined : (msg: string) => console.log(msg);
-    const startTime = Date.now();
-
-    const runState = await runGoal(goal, {
-      stateFile: opts.stateFile ?? DEFAULT_GOAL_STATE_FILE,
-      log,
-    });
-
-    const totalDuration = (Date.now() - startTime) / 1000;
-
-    if (opts.notify) {
-      const passed = runState.status === "gate_passed";
-      try {
-        await fetch(`https://ntfy.sh/${opts.notifyTopic ?? DEFAULT_NTFY_TOPIC}`, {
-          method: "POST",
-          headers: {
-            Title: passed
-              ? `overnight: Goal completed (${runState.iterations.length} iterations)`
-              : `overnight: ${runState.status} after ${runState.iterations.length} iterations`,
-            Priority: passed ? "default" : "high",
-            Tags: passed ? "white_check_mark" : "warning",
-          },
-          body: passed
-            ? `Gate passed. ${runState.iterations.length} iterations.`
-            : `Status: ${runState.status}. Check report for details.`,
-        });
-        if (!opts.quiet) console.log(`\x1b[2mNotification sent\x1b[0m`);
-      } catch {
-        if (!opts.quiet) console.log("\x1b[33mWarning: Failed to send notification\x1b[0m");
-      }
-    }
-
-    if (!opts.quiet) {
-      console.log(`\n\x1b[1m━━━ Hammer Summary ━━━\x1b[0m`);
-      console.log(`Status: ${runState.status === "gate_passed" ? "\x1b[32m" : "\x1b[31m"}${runState.status}\x1b[0m`);
-      console.log(`Iterations: ${runState.iterations.length}`);
-      console.log(`Gate attempts: ${runState.gate_results.length}`);
-
-      let durationStr: string;
-      if (totalDuration >= 3600) {
-        const hours = Math.floor(totalDuration / 3600);
-        const mins = Math.floor((totalDuration % 3600) / 60);
-        durationStr = `${hours}h ${mins}m`;
-      } else if (totalDuration >= 60) {
-        const mins = Math.floor(totalDuration / 60);
-        const secs = Math.floor(totalDuration % 60);
-        durationStr = `${mins}m ${secs}s`;
-      } else {
-        durationStr = `${totalDuration.toFixed(1)}s`;
-      }
-      console.log(`Duration: ${durationStr}`);
-
-      if (runState.gate_results.length > 0) {
-        const lastGate = runState.gate_results[runState.gate_results.length - 1];
-        console.log(`\nGate: ${lastGate.summary}`);
-        for (const check of lastGate.checks) {
-          const icon = check.passed ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m";
-          console.log(`  ${icon} ${check.name}`);
+      onProgress: (result, index) => {
+        const icon = statusIcon(result);
+        const dur = formatDuration(result.durationSeconds);
+        console.log(`  ${icon} Step ${index + 1}: [${dur}]`);
+        if (!result.testsPass) console.log(`    ⚠ tests failed`);
+        if (!result.buildPass) console.log(`    ⚠ build failed`);
+        console.log();
+      },
+      onPrediction: (prediction, reasoning) => {
+        if (prediction) {
+          console.log(`  → Next: ${prediction.message.slice(0, 70)}`);
+        } else {
+          console.log(`  → Done: ${reasoning}`);
         }
-      }
-    }
-
-    if (runState.status !== "gate_passed") {
-      process.exit(1);
-    }
-  });
-
-program
-  .command("plan")
-  .description("Interactive design session to create a goal.yaml")
-  .argument("<goal>", "High-level goal description")
-  .option("-o, --output <file>", "Output file path", "goal.yaml")
-  .action(async (goal, opts) => {
-    const result = await runPlanner(goal, {
-      outputFile: opts.output,
-      log: (msg: string) => console.log(msg),
+      },
     });
 
-    if (!result) {
-      process.exit(1);
-    }
+    // Cleanup PID file
+    try { require("fs").unlinkSync(PID_FILE); } catch {}
+
+    // Summary
+    const totalTime = run.results.reduce((s, r) => s + r.durationSeconds, 0);
+    const passed = run.results.filter((r) => r.exitCode === 0).length;
+
+    console.log(`  Done! ${passed}/${run.results.length} steps succeeded`);
+    console.log(`  Branch: ${run.branch}`);
+    console.log(`  Total: ${formatDuration(totalTime)}`);
+    console.log(`  Run: overnight log\n`);
   });
 
+// ── stop ─────────────────────────────────────────────────────────────
+
 program
-  .command("init")
-  .description("Create an example goal.yaml or tasks.yaml")
-  .option("--tasks", "Create tasks.yaml instead of goal.yaml")
-  .action((opts) => {
-    if (opts.tasks) {
-      // Legacy tasks.yaml template
-      const example = `# overnight task file
-# Run with: overnight run tasks.yaml
+  .command("stop")
+  .description("Stop a running overnight session")
+  .action(() => {
+    if (!existsSync(PID_FILE)) {
+      console.log("  No overnight session running.");
+      process.exit(0);
+    }
 
-defaults:
-  timeout_seconds: 300  # 5 minutes per task
-  verify: true          # Run verification after each task
+    const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
 
-  # Secure defaults - no Bash, just file operations
-  allowed_tools:
-    - Read
-    - Edit
-    - Write
-    - Glob
-    - Grep
+    // Mark the latest run as stopped
+    const latest = getLatestRun();
+    if (latest && latest.status === "running") {
+      latest.status = "stopped";
+      const runFile = join(RUNS_DIR, `${latest.id}.json`);
+      writeFileSync(runFile, JSON.stringify(latest, null, 2));
+    }
 
-  # Security settings (optional - deny_patterns enabled by default)
-  security:
-    sandbox_dir: "."      # Restrict to current directory
-    max_turns: 100        # Prevent runaway agents
-    # audit_log: "overnight-audit.log"  # Uncomment to enable
+    try {
+      process.kill(pid, "SIGTERM");
+      console.log(`  Stopped overnight (pid ${pid}).`);
+    } catch {
+      console.log("  Process already exited.");
+    }
 
-tasks:
-  # Simple string format
-  - "Find and fix any TODO comments in the codebase"
+    try { require("fs").unlinkSync(PID_FILE); } catch {}
+  });
 
-  # Dict format with overrides
-  - prompt: "Add input validation to all form handlers"
-    timeout_seconds: 600  # Allow more time
+// ── log ──────────────────────────────────────────────────────────────
 
-  - prompt: "Review code for security issues"
-    verify: false  # Don't need to verify a review
+program
+  .command("log")
+  .description("Show results of the latest run")
+  .option("-a, --all", "Show all runs")
+  .action((opts: { all?: boolean }) => {
+    if (!existsSync(RUNS_DIR)) {
+      console.log("  No runs yet. Run: overnight start \"your intent\"");
+      process.exit(0);
+    }
 
-  # Can add Bash for specific tasks that need it
-  - prompt: "Run the test suite and fix any failures"
-    allowed_tools:
-      - Read
-      - Edit
-      - Bash
-      - Glob
-      - Grep
-`;
+    if (opts.all) {
+      const files = readdirSync(RUNS_DIR)
+        .filter((f) => f.endsWith(".json"))
+        .sort()
+        .reverse();
 
-      if (existsSync("tasks.yaml")) {
-        console.log("\x1b[33mtasks.yaml already exists\x1b[0m");
+      if (files.length === 0) {
+        console.log("  No runs found.");
+        process.exit(0);
+      }
+
+      console.log(`\n  ${files.length} runs:\n`);
+      for (const f of files) {
+        const run = JSON.parse(readFileSync(join(RUNS_DIR, f), "utf-8")) as OvernightRun;
+        const passed = run.results.filter((r) => r.exitCode === 0).length;
+        console.log(`  ${run.id}  ${run.status}  ${run.mode}  ${passed}/${run.results.length} ok  "${run.intent.slice(0, 50)}"`);
+      }
+      console.log();
+      return;
+    }
+
+    const run = getLatestRun();
+    if (!run) {
+      console.log("  No runs found.");
+      process.exit(0);
+    }
+
+    console.log(`\n  Run: ${run.id}`);
+    console.log(`  Status: ${run.status}`);
+    console.log(`  Mode: ${run.mode}`);
+    console.log(`  Branch: ${run.branch}`);
+    console.log(`  Intent: "${run.intent}"`);
+    console.log(`  Started: ${run.startedAt}`);
+    if (run.finishedAt) console.log(`  Finished: ${run.finishedAt}`);
+    console.log();
+
+    if (run.results.length === 0 && run.predictions.length > 0) {
+      console.log("  Goals (not yet executed):\n");
+      for (let i = 0; i < run.predictions.length; i++) {
+        const p = run.predictions[i];
+        console.log(`  ${i + 1}. ${p.message}`);
+      }
+      console.log();
+      return;
+    }
+
+    for (let i = 0; i < run.results.length; i++) {
+      const r = run.results[i];
+      const icon = statusIcon(r);
+      console.log(`  ${icon} ${i + 1}. ${r.message}`);
+      console.log(`     ${formatDuration(r.durationSeconds)}`);
+      if (!r.testsPass) console.log(`     ⚠ tests failed`);
+      if (!r.buildPass) console.log(`     ⚠ build failed`);
+      console.log();
+    }
+
+    const totalTime = run.results.reduce((s, r) => s + r.durationSeconds, 0);
+    const passed = run.results.filter((r) => r.exitCode === 0).length;
+    console.log(`  Total: ${passed}/${run.results.length} ok, ${formatDuration(totalTime)}\n`);
+  });
+
+// ── history ──────────────────────────────────────────────────────────
+
+program
+  .command("history")
+  .description("Show your recent Claude Code message history")
+  .option("-n, --limit <n>", "Number of messages", "30")
+  .option("--cwd <dir>", "Filter by working directory")
+  .action((opts: { limit: string; cwd?: string }) => {
+    const limit = parseInt(opts.limit, 10);
+    const messages = opts.cwd
+      ? getMessagesForCwd(opts.cwd, limit * 500)
+      : getAllMessages({ tokenBudget: limit * 500 });
+
+    if (messages.length === 0) {
+      console.log("  No Claude Code message history found.");
+      console.log("  Use Claude Code normally — overnight reads your session files.\n");
+      process.exit(0);
+    }
+
+    console.log(`\n  ${messages.length} recent messages:\n`);
+    for (const m of messages) {
+      const time = m.timestamp ? new Date(m.timestamp).toLocaleString() : "?";
+      const proj = m.project || "?";
+      const text = m.text.length > 80 ? m.text.slice(0, 77) + "..." : m.text;
+      console.log(`  [${time}] (${proj}) ${text}`);
+    }
+    console.log();
+  });
+
+// ── config ───────────────────────────────────────────────────────────
+
+program
+  .command("config")
+  .description("Show or set configuration")
+  .option("--set <key=value>", "Set a config value")
+  .option("--reset", "Reset to defaults")
+  .action((opts: { set?: string; reset?: boolean }) => {
+    if (opts.reset) {
+      saveConfig(DEFAULT_CONFIG);
+      console.log("  Config reset to defaults.\n");
+      return;
+    }
+
+    if (opts.set) {
+      const config = loadConfig();
+      const [key, value] = opts.set.split("=");
+      if (!(key in config)) {
+        console.error(`  Unknown config key: ${key}`);
+        console.error(`  Valid keys: ${Object.keys(config).join(", ")}`);
         process.exit(1);
       }
 
-      writeFileSync("tasks.yaml", example);
-      console.log("\x1b[32mCreated tasks.yaml\x1b[0m");
-      console.log("Edit the file, then run: \x1b[1movernight run tasks.yaml\x1b[0m");
-    } else {
-      // Goal mode template (new default)
-      const example = `# overnight goal file
-# Run with: overnight run goal.yaml
-#
-# Or use "overnight plan" for an interactive design session:
-#   overnight plan "Build a multiplayer game"
+      const typedKey = key as keyof OvernightConfig;
+      if (typeof config[typedKey] === "number") {
+        (config as any)[key] = parseFloat(value);
+      } else {
+        (config as any)[key] = value;
+      }
+      saveConfig(config);
+      console.log(`  Set ${key} = ${value}\n`);
+      return;
+    }
 
-goal: "Describe your project goal here"
+    // Show current config
+    const config = loadConfig();
+    const labels: Record<string, string> = {
+      claudeBin: "Claude CLI path",
+      maxMessages: "Max steps per run (safety cap)",
+      model: "Model for predictions",
+      apiKey: "API key",
+      baseUrl: "API base URL (for GLM, Minimax, Kimi, etc.)",
+    };
+    console.log("\n  overnight config:\n");
+    for (const [key, value] of Object.entries(config)) {
+      const label = labels[key] ?? key;
+      const display = key === "apiKey" && value ? `${String(value).slice(0, 10)}...` : value;
+      console.log(`  ${label}: ${display || "(not set)"}`);
+    }
+    console.log(`\n  Config file: ${CONFIG_FILE}`);
+    console.log(`  Set values: overnight config --set key=value\n`);
+  });
 
-acceptance_criteria:
-  - "The project builds without errors"
-  - "All tests pass"
-  - "Core features are functional"
+// ── profile ──────────────────────────────────────────────────────────
 
-verification_commands:
-  - "npm run build"
-  - "npm test"
-
-constraints:
-  - "Don't modify existing API contracts"
-  - "Keep dependencies minimal"
-
-# How many build iterations before stopping
-max_iterations: 15
-
-# Stop if remaining items don't shrink for this many iterations
-convergence_threshold: 3
-
-defaults:
-  timeout_seconds: 600    # 10 minutes per iteration
-  allowed_tools:
-    - Read
-    - Edit
-    - Write
-    - Glob
-    - Grep
-    - Bash
-  security:
-    sandbox_dir: "."
-    max_turns: 150
-`;
-
-      if (existsSync("goal.yaml")) {
-        console.log("\x1b[33mgoal.yaml already exists\x1b[0m");
+program
+  .command("profile")
+  .description("Show or update your user profile")
+  .option("-u, --update", "Rebuild profile from conversation history")
+  .action(async (opts: { update?: boolean }) => {
+    if (opts.update) {
+      const config = loadConfig();
+      console.log("\n  Analyzing your Claude Code history...\n");
+      try {
+        const profile = await updateProfile(config);
+        console.log(`  Profile updated (${profile.turnsAnalyzed} turns analyzed).\n`);
+        console.log(profileToPromptContext(profile));
+        console.log();
+      } catch (err: any) {
+        console.error(`  Error: ${err.message}`);
         process.exit(1);
       }
-
-      writeFileSync("goal.yaml", example);
-      console.log("\x1b[32mCreated goal.yaml\x1b[0m");
-      console.log("Edit the file, then run: \x1b[1movernight run goal.yaml\x1b[0m");
-      console.log("\x1b[2mTip: Use 'overnight plan \"your goal\"' for an interactive design session\x1b[0m");
+      return;
     }
+
+    const profile = loadProfile();
+    if (!profile.updatedAt) {
+      console.log("\n  No profile yet. Run: overnight profile --update\n");
+      return;
+    }
+    console.log(`\n  Last updated: ${new Date(profile.updatedAt).toLocaleString()}`);
+    console.log(`  Turns analyzed: ${profile.turnsAnalyzed}\n`);
+    console.log(profileToPromptContext(profile));
+    console.log();
   });
 
+// ── default (interactive) ────────────────────────────────────────────
+
+// If no command is given, launch interactive mode
 program
-  .command("agent")
-  .description("Run an autonomous agent from a YAML config (e.g. portfolio manager)")
-  .argument("<config-file>", "Path to agent YAML config file")
-  .option("-q, --quiet", "Minimal output")
-  .option("--key-id <id>", "Alpaca API key ID (overrides config/env)")
-  .option("--secret-key <key>", "Alpaca secret key (overrides config/env)")
-  .action(async (configFile, opts) => {
-    if (!existsSync(configFile)) {
-      console.error(`Error: Config file not found: ${configFile}`);
-      process.exit(1);
-    }
-
-    const raw = parseYaml(readFileSync(configFile, "utf-8")) as Partial<AgentConfig>;
-
-    if (!raw.name) {
-      console.error("Error: agent config must have 'name'");
-      process.exit(1);
-    }
-    if (raw.paper_trading === false) {
-      console.error("Error: paper_trading must be true for safety");
-      process.exit(1);
-    }
-
-    const config: AgentConfig = {
-      name: raw.name,
-      description: raw.description,
-      interval_seconds: raw.interval_seconds ?? 300,
-      run_during_market_hours_only: raw.run_during_market_hours_only ?? true,
-      paper_trading: true,
-      alpaca_key_id: opts.keyId ?? raw.alpaca_key_id,
-      alpaca_secret_key: opts.secretKey ?? raw.alpaca_secret_key,
-      max_position_pct: raw.max_position_pct ?? 0.10,
-      max_daily_loss_usd: raw.max_daily_loss_usd ?? 200,
-      max_order_value_usd: raw.max_order_value_usd ?? 500,
-      allowed_symbols: raw.allowed_symbols,
-      model: raw.model ?? "claude-sonnet-4-6",
-      max_turns_per_loop: raw.max_turns_per_loop ?? 40,
-      max_budget_usd_per_loop: raw.max_budget_usd_per_loop,
-      state_file: raw.state_file ?? ".portfolio-state.json",
-      decisions_log: raw.decisions_log ?? "portfolio-decisions.jsonl",
-      notify: raw.notify ?? false,
-      notify_topic: raw.notify_topic ?? "portfolio-agent",
-    };
-
-    if (!config.alpaca_key_id && !process.env.ALPACA_KEY_ID) {
-      console.error("Error: Alpaca credentials required.");
-      console.error("  Set ALPACA_KEY_ID and ALPACA_SECRET_KEY env vars");
-      console.error("  Or use --key-id / --secret-key flags");
-      console.error("  Or add alpaca_key_id / alpaca_secret_key to config file");
-      process.exit(1);
-    }
-
-    const log = opts.quiet ? () => {} : (msg: string) => console.log(msg);
-    await runAgentLoop(config, { log, quiet: opts.quiet ?? false });
+  .option("-a, --all", "Cross-project mode — suggest plans across all projects")
+  .option("-r, --resume", "Resume the latest interactive session")
+  .action(async (opts: { all?: boolean; resume?: boolean }) => {
+    const config = loadConfig();
+    await runInteractive(config, { all: opts.all, resume: opts.resume });
   });
 
-program
-  .command("evolve")
-  .description("Run the meta-agent to autonomously improve a codebase")
-  .argument("<config-file>", "Path to evolve YAML config file")
-  .option("-q, --quiet", "Minimal output")
-  .option("--once", "Run a single evolution cycle then exit")
-  .action(async (configFile, opts) => {
-    if (!existsSync(configFile)) {
-      console.error(`Error: Config file not found: ${configFile}`);
-      process.exit(1);
-    }
-
-    const raw = parseYaml(readFileSync(configFile, "utf-8")) as Partial<EvolveConfig>;
-
-    if (!raw.name) {
-      console.error("Error: evolve config must have 'name'");
-      process.exit(1);
-    }
-
-    const { resolve } = await import("path");
-
-    const config: EvolveConfig = {
-      name: raw.name,
-      description: raw.description,
-      project_dir: resolve(raw.project_dir ?? process.cwd()),
-      interval_seconds: raw.interval_seconds ?? 3600,
-      max_cycles: opts.once ? 1 : raw.max_cycles,
-      model: raw.model ?? "claude-sonnet-4-6",
-      max_turns_per_phase: raw.max_turns_per_phase ?? 60,
-      roadmap_file: raw.roadmap_file,
-      focus_areas: raw.focus_areas,
-      branch_prefix: raw.branch_prefix ?? "evolve/",
-      auto_pr: raw.auto_pr ?? true,
-      base_branch: raw.base_branch ?? "main",
-      protected_files: raw.protected_files,
-      protected_patterns: raw.protected_patterns,
-      max_files_per_cycle: raw.max_files_per_cycle ?? 10,
-      max_lines_changed_per_cycle: raw.max_lines_changed_per_cycle ?? 500,
-      state_file: raw.state_file ?? ".evolve-state.json",
-      history_log: raw.history_log ?? "evolve-history.jsonl",
-      notify: raw.notify ?? false,
-      notify_topic: raw.notify_topic ?? "overnight-evolve",
-    };
-
-    const log = opts.quiet ? () => {} : (msg: string) => console.log(msg);
-    await runEvolveLoop(config, { log, quiet: opts.quiet ?? false });
-  });
+// ── Parse ────────────────────────────────────────────────────────────
 
 program.parse();

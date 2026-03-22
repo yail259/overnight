@@ -11,8 +11,12 @@ bun.lockb
 # OS
 .DS_Store
 
-# overnight state files
+# overnight state
 .overnight-state.json
+
+# Environment variables (secrets)
+.env
+.env.*
 
 # IDE
 .idea/
