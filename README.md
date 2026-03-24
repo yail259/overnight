@@ -8,8 +8,8 @@
 [![license](https://img.shields.io/badge/license-MIT-ede9e3?style=flat-square&labelColor=0a0a0c)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-native-4ade80?style=flat-square&labelColor=0a0a0c)](https://claude.com/claude-code)
 
-overnight builds a profile of your coding style from Claude Code sessions,<br />
-then predicts what you'd type next — and executes it while you sleep.
+overnight reads your Claude Code sessions, builds a profile of how you code,<br />
+and predicts what you'd type next — then executes it while you sleep.
 
 [Website](https://workovernight.com) · [Getting Started](#install) · [Commands](#commands) · [How it Works](#how-it-works)
 
@@ -21,32 +21,27 @@ then predicts what you'd type next — and executes it while you sleep.
 
 ### The idea
 
-You work with Claude Code all day. overnight reads those sessions, extracts a profile of *how you code* — your tone, your stack, your values — and uses it to predict messages that sound like you typed them. Not a batch queue. Not a task runner. A model of you.
+You work with Claude Code all day. overnight reads those sessions — your actual messages, your tone, your patterns — and learns to predict what you'd type next. Before bed, describe what you want done. overnight predicts each message, executes it, observes the result, and adapts.
+
+Not a batch queue. Not a task runner. A model of *you*.
 
 ```
 predict message → execute via claude -p → observe output/diff/tests
        ↑                                           ↓
-       └───────── feed results back ───────────────┘
+       └──── evaluate result, adapt, repeat ────────┘
 ```
 
-Each prediction sees what actually happened — build errors, test failures, code changes — and adapts. The model decides what's next based on real results, not a stale plan.
+### How it's different
 
-### The profile
+The predictor has a `sh` tool — it can run any read-only shell command (`grep`, `cat`, `git diff`, `find`, etc.) to verify what actually exists before predicting. It reads your conversation history for voice matching, checks source files to avoid suggesting done work, and evaluates its own results after each step.
 
-This is what makes overnight different. It analyses your conversations and extracts:
-
-| | What it captures |
+| Input | What it sees |
 |---|---|
-| **Communication** | Tone, message length, patterns — *"terse, imperative, starts with verbs"* |
-| **Coding patterns** | Languages, frameworks, preferences, things you avoid |
-| **Values** | What you care about — *"ship fast"*, *"minimal abstractions"*, *"no dead code"* |
-| **Focus** | What you've been working on recently |
-
-The predictor never sees raw conversations. It receives three inputs:
-
-> **WHO** — your profile &nbsp; **WHERE** — your direction &nbsp; **WHAT** — your workspace
-
-One output: the message you'd type next.
+| **Your profile** | Communication style, coding patterns, values — extracted from real conversations |
+| **Your voice** | Actual messages you typed in Claude Code — not descriptions, real samples |
+| **Your workspace** | File tree, exports, git log, README, ROADMAP — via `sh` tool on demand |
+| **Previous results** | Diffs, test output, build status from each completed step |
+| **Meta-learning** | Which prediction categories you merge vs discard over time |
 
 ---
 
@@ -56,6 +51,8 @@ One output: the message you'd type next.
 npm install -g @yail259/overnight
 ```
 
+Supports Anthropic and OpenAI-compatible APIs (GPT-4o, Groq, Together, Ollama, etc).
+
 ## Quick start
 
 ```bash
@@ -64,24 +61,41 @@ overnight start "intent"     # headless — predict + execute immediately
 overnight log                # review what happened overnight
 ```
 
+## Modes
+
+| Mode | What overnight does |
+|------|-------------|
+| 🧹 `tidy` | Cleanup. Dead code, formatting, small fixes. No functional changes. |
+| 🔧 `refine` | Structural improvement. Design patterns, coupling, test architecture. Same features, better code. |
+| 🏗️ `build` | Product engineering. Derives the next feature from the business case. Ships working increments. |
+| 🚀 `radical` | Unhinged product visionary. Bold ideas nobody asked for but everyone would love. You wake up delighted or terrified. |
+
 ## Commands
 
 | Command | What it does |
 |---------|-------------|
-| `overnight` | Interactive TUI with plan suggestions and streaming |
+| `overnight` | Interactive TUI with plan suggestions |
 | `overnight --all` | Suggest across all projects |
-| `overnight --resume` | Resume the last interrupted run |
+| `overnight --resume` | Resume an interrupted run |
 | `overnight start <intent>` | Headless predict + execute |
 | `overnight start <intent> --dry-run` | Preview predictions without executing |
-| `overnight start <intent> --mode dont-stop` | Continuous mode — keep going after goals are met |
 | `overnight stop` | Stop a running session |
 | `overnight log` | Show latest run results |
-| `overnight log --all` | Show all runs |
-| `overnight history` | Recent Claude Code messages |
-| `overnight history --limit 50` | With message limit |
 | `overnight profile` | View your extracted profile |
-| `overnight profile --update` | Re-extract profile from latest sessions |
 | `overnight config` | Show/set configuration |
+
+### TUI slash commands
+
+| Command | What it does |
+|---------|-------------|
+| `/profile` | Show your profile inline |
+| `/ambition <mode>` | Set mode: tidy, refine, build, radical |
+| `/status` | Current run status |
+| `/log` | Latest run results |
+| `/cost` | API cost breakdown |
+| `/diff` | Git diff of overnight branch |
+| `/undo` | Revert last overnight commit |
+| `/help` | All commands and keybindings |
 
 ## How it works
 
@@ -93,14 +107,16 @@ overnight log                # review what happened overnight
 │                                                                 │
 │   2. Before bed                                                 │
 │      overnight suggests plans from recent activity               │
-│      You pick one, set ambition level, go to sleep              │
+│      You pick a mode (tidy/refine/build/radical), go to sleep   │
 │                                                                 │
 │   3. While you sleep                                            │
-│      predict → execute → observe → adapt → repeat               │
+│      sh("grep ...") → verify state → predict → execute          │
+│      evaluate result → sh("git diff") → adapt → repeat          │
 │      everything on overnight/{run-id} branch                    │
 │                                                                 │
 │   4. Morning                                                    │
 │      overnight log — review the branch, merge what you like     │
+│      meta-learning records what you kept vs discarded            │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -110,28 +126,18 @@ overnight log                # review what happened overnight
 | Mode | Behaviour |
 |------|-----------|
 | **Stick to plan** | One sprint. Accomplish the stated goals, then stop. |
-| **Don't stop** | After primary goals, continue with docs, tests, cleanup. Runs until nothing left or Ctrl+C. |
-
-### Modes
-
-| Mode | What overnight does |
-|------|-------------|
-| 🧹 `tidy` | Cleanup. Dead code, formatting, small fixes. No functional changes. |
-| 🔧 `refine` | Structural improvement. Design pattern refactors, coupling reduction, test architecture. Same features, better code. |
-| 🏗️ `build` | Product engineering. Derives the next feature from the core business case. Extends what exists toward what it should be. |
-| 🚀 `radical` | Unhinged visionary mode. Bold product ideas nobody asked for but everyone would love. You wake up either delighted or terrified. |
+| **Don't stop** | After primary goals, continue improvements. Runs until nothing left or Ctrl+C. |
 
 ## Config
-
-Stored in `~/.overnight/config.json`. Runs in `~/.overnight/runs/`.
 
 ```bash
 overnight config --set apiKey=sk-...
 overnight config --set model=claude-opus-4-6
-overnight config --set baseUrl=https://...    # custom API endpoint
+overnight config --set baseUrl=https://...       # custom API endpoint
+overnight config --set apiProvider=openai         # for OpenAI-compatible APIs
 ```
 
-Works with Anthropic and any compatible API (GLM, Minimax, Kimi, etc).
+Stored in `~/.overnight/config.json`. Runs in `~/.overnight/runs/`.
 
 ## Architecture
 
@@ -139,12 +145,15 @@ Works with Anthropic and any compatible API (GLM, Minimax, Kimi, etc).
 src/
   cli.ts          CLI entry — start, stop, log, history, profile, config
   types.ts        Core types and constants
-  history.ts      Extract messages from Claude Code session JSONL files
-  predictor.ts    Profile + workspace + results → predicted messages
-  executor.ts     Adaptive execution loop, single branch per run
+  context.ts      Workspace dump, sh tool (sandboxed), conversation history
+  api.ts          API abstraction — Anthropic + OpenAI, single-shot + multi-turn
+  predictor.ts    Multi-turn prediction with sh/forget tools + self-evaluation
+  executor.ts     Adaptive loop, checkpoint/resume, meta-learning integration
   interactive.ts  Interactive TUI (Anthropic SDK streaming + React Ink)
-  profile.ts      User profile extraction from conversation history
-  ui/             React Ink TUI components
+  profile.ts      User profile + direction extraction
+  meta-learning.ts  Track merge/discard outcomes, prediction calibration
+  history.ts      Extract messages from Claude Code session JSONL files
+  ui/             React Ink TUI (toast, composer, shortcuts, command dropdown, etc.)
 ```
 
 ## Build from source
