@@ -13,6 +13,8 @@ then predicts what you'd type next — and executes it while you sleep.
 
 [Website](https://workovernight.com) · [Getting Started](#install) · [Commands](#commands) · [How it Works](#how-it-works)
 
+<img src="https://workovernight.com/image.png" alt="overnight TUI" width="700" />
+
 </div>
 
 ---

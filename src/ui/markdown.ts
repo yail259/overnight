@@ -1,7 +1,16 @@
 /**
  * Markdown rendering for terminal output.
  * Uses marked + marked-terminal for formatting, cli-highlight for code blocks.
+ *
+ * IMPORTANT: Force color support before importing chalk-dependent modules.
+ * Bun-bundled builds lose TTY detection, so marked-terminal outputs raw
+ * markdown without ANSI codes unless we force it.
  */
+
+// Force chalk color support in bundled builds
+if (!process.env.FORCE_COLOR && process.stdout.isTTY) {
+  process.env.FORCE_COLOR = "1";
+}
 
 import { Marked } from "marked";
 import { markedTerminal } from "marked-terminal";
