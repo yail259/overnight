@@ -29,6 +29,7 @@ import {
   extractDirection,
   directionToPromptContext,
 } from "./profile.js";
+import { loadPredictionProfile, predictionProfileToPromptContext } from "./meta-learning.js";
 import { execSync } from "child_process";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -158,20 +159,43 @@ const AMBITION_PROMPT: Record<AmbitionLevel, string> = {
 - Balance between continuation and modest new work
 - Things you'd naturally do next`,
 
-  yolo: `Think BIG and push BEYOND the obvious:
-- Architectural refactors, performance optimizations, better abstractions
-- Bold new features that would make this project significantly better
-- After primary goals, improve docs, add high-value tests, clean up for modularity
-- Don't hold back — you opted in to ambitious work`,
+  yolo: `You are a senior engineer doing a design review. Think structurally, not just ambitiously:
+
+ARCHITECTURAL ANALYSIS — before predicting, look for:
+- Inconsistent patterns (3 different error handling approaches → consolidate to one)
+- High coupling (modules that import too many siblings → extract interfaces)
+- Missing abstractions (repeated 5-line patterns → extract utility)
+- Test coverage gaps (critical paths with no tests → add them)
+- Performance bottlenecks (synchronous I/O in hot paths → async)
+- API surface bloat (exported functions nobody calls → clean up)
+
+DESIGN PRINCIPLES to apply:
+- Separation of concerns — each module does one thing well
+- Explicit over implicit — no magic, no hidden state
+- Extend the project's own patterns — don't fight the architecture, improve it
+- Reduce coupling before adding features — clean foundation first
+- Test at boundaries, not internals
+
+THEN be ambitious:
+- Bold refactors that improve the structural health of the codebase
+- Features that the architecture is clearly ready for (the extension points exist)
+- After primary goals, improve modularity, docs, and high-value tests
+- Don't hold back — but make every change defensible on engineering principles`,
 };
 
 // ── System prompt builders (user-model framing) ──────────────────────
+
+function getPredictionCtx(): string {
+  const predProfile = loadPredictionProfile();
+  return predictionProfileToPromptContext(predProfile);
+}
 
 function buildPredictSystem(
   ambition: AmbitionLevel,
   profileCtx: string,
   directionCtx: string
 ): string {
+  const predCtx = getPredictionCtx();
   return `You are a developer sitting down at your computer. You're about to work with Claude Code.
 
 You have a specific style, preferences, and a direction you're heading in. You're going to type messages into Claude Code to get work done tonight.
@@ -179,6 +203,8 @@ You have a specific style, preferences, and a direction you're heading in. You'r
 ${profileCtx}
 
 ${directionCtx}
+
+${predCtx}
 
 ## Ambition: ${ambition.toUpperCase()}
 ${AMBITION_PROMPT[ambition]}

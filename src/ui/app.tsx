@@ -23,19 +23,14 @@ import { ToastDisplay } from "./toast.js";
 import { CommandDropdown, getMatchingCommands } from "./command-dropdown.js";
 import { ShortcutsBar } from "./shortcuts.js";
 import { useInputHistory } from "./history.js";
-import { matchCommand } from "./commands.js";
+import { matchCommand, getAllCommands } from "./commands.js";
 import { useTerminalWidth } from "./hooks.js";
 import { TEXT, CHROME } from "./theme.js";
 import type { OvernightConfig } from "../types.js";
 
-// ── Command list for dropdown ──────────────────────────────────────
+// ── Command list for dropdown (loaded once) ────────────────────────
 
-const ALL_COMMANDS = [
-  { name: "clear", description: "Clear conversation" },
-  { name: "compact", description: "Compress context" },
-  { name: "help", description: "Show commands & keys" },
-  { name: "verbose", description: "Toggle display mode" },
-];
+const ALL_COMMANDS = getAllCommands();
 
 // ── App Props ───────────────────────────────────────────────────────
 
@@ -172,7 +167,7 @@ function App({
       const cmd = matchCommand(trimmed);
       if (cmd) {
         dispatch({ type: "SET_INPUT", value: "" });
-        cmd.command.handler(cmd.args, dispatch, { addMessage, onCompact, onClear });
+        cmd.command.handler(cmd.args, dispatch, { addMessage, addToast, onCompact, onClear });
         return;
       }
 

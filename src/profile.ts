@@ -251,6 +251,28 @@ const DIRECTION_TOOL: ToolDef = {
   },
 };
 
+/** Get temporal context — day of week, time of day, recent rhythm */
+function getTemporalContext(): string {
+  const now = new Date();
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const day = days[now.getDay()];
+  const hour = now.getHours();
+
+  let timeOfDay = "morning";
+  if (hour >= 12 && hour < 17) timeOfDay = "afternoon";
+  if (hour >= 17 && hour < 21) timeOfDay = "evening";
+  if (hour >= 21 || hour < 5) timeOfDay = "night";
+
+  let workPhaseHint = "";
+  if (day === "Monday") workPhaseHint = "Start of week — typically high-energy, good for ambitious work.";
+  else if (day === "Friday") workPhaseHint = "End of week — often cleanup, docs, tying loose ends.";
+  else if (day === "Saturday" || day === "Sunday") workPhaseHint = "Weekend — often side projects, exploration, or catching up.";
+
+  if (timeOfDay === "night") workPhaseHint += " Late night session — user is likely wrapping up or delegating to overnight.";
+
+  return `Time: ${day} ${timeOfDay} (${hour}:00)\n${workPhaseHint}`.trim();
+}
+
 const DIRECTION_SYSTEM = `You are analyzing a developer's recent Claude Code conversations to understand their DIRECTION — where they're headed, not what they need to do.
 
 CRITICAL DISTINCTION:
@@ -265,6 +287,7 @@ Think about:
 - What THEMES keep coming up? (patterns they're pursuing across multiple changes)
 - What TENSIONS exist? (what seems to bother them, what do they keep coming back to?)
 - What's the MOMENTUM? (what's active vs settling down?)
+- What CYCLE are they in? (build→test→fix? feature→polish→ship? Consider the time/day context)
 
 Do NOT extract specific tasks, TODOs, or action items. Extract the trajectory.
 Call set_direction with your analysis.`;
@@ -310,7 +333,7 @@ export async function extractDirection(
     model: config.model,
     maxTokens: 2048,
     system: DIRECTION_SYSTEM,
-    prompt: `## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Call set_direction.`,
+    prompt: `## Temporal Context\n${getTemporalContext()}\n\n## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Consider the temporal context for cycle detection. Call set_direction.`,
     tools: [DIRECTION_TOOL],
   });
 
