@@ -1,5 +1,5 @@
 /**
- * Adaptive message prediction via Anthropic SDK.
+ * Adaptive message prediction via the API abstraction layer.
  *
  * Architecture: Model the USER, not the tasks.
  * - User profile (style/tone) → from profile.ts
@@ -13,7 +13,6 @@
  * - `suggestPlans()` — suggest what to work on tonight
  */
 
-import Anthropic from "@anthropic-ai/sdk";
 import type {
   PredictedMessage,
   SuggestedPlan,
@@ -22,6 +21,7 @@ import type {
   AdaptiveContext,
   UserDirection,
 } from "./types.js";
+import { createClient, extractToolInputs, type ToolDef } from "./api.js";
 import { getProjectList } from "./history.js";
 import {
   loadProfile,
@@ -32,13 +32,6 @@ import {
 import { execSync } from "child_process";
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
-function createClient(config: OvernightConfig) {
-  return new Anthropic({
-    apiKey: config.apiKey || undefined,
-    baseURL: config.baseUrl || undefined,
-  });
-}
 
 /** Shell command runner with timeout */
 function run(cmd: string, cwd: string): string {
@@ -53,41 +46,33 @@ function run(cmd: string, cwd: string): string {
 function getWorkspaceSnapshot(cwd: string): string {
   const lines: string[] = ["## Workspace State"];
 
-  // Branch
   const branch = run("git rev-parse --abbrev-ref HEAD", cwd);
   if (branch) lines.push(`Branch: ${branch}`);
 
-  // Recent commits — shows what's DONE
   const commits = run("git log --oneline -10", cwd);
   if (commits) lines.push(`\nRecent commits:\n${commits}`);
 
-  // Working tree — shows what's in progress
   const status = run("git status --short", cwd);
   if (status) lines.push(`\nWorking tree:\n${status}`);
 
-  // Source tree — shows what EXISTS (ground truth)
   const srcFiles = run(
     "find src -name '*.ts' -o -name '*.tsx' 2>/dev/null | sort | head -50",
     cwd
   );
   if (srcFiles) lines.push(`\nSource files:\n${srcFiles}`);
 
-  // Package scripts — shows what the project can DO
   const pkgScripts = run(
     `node -e "try{const p=require('./package.json');console.log(Object.keys(p.scripts||{}).join(', '))}catch{}" 2>/dev/null`,
     cwd
   );
   if (pkgScripts) lines.push(`\nAvailable scripts: ${pkgScripts}`);
 
-  // README first lines — shows what the project IS
   const readme = run("head -15 README.md 2>/dev/null", cwd);
   if (readme) lines.push(`\nREADME (first 15 lines):\n${readme}`);
 
-  // Recent changes — shows where work has concentrated
   const recentChanges = run("git diff --stat HEAD~5..HEAD 2>/dev/null", cwd);
   if (recentChanges) lines.push(`\nRecent changes (last 5 commits):\n${recentChanges}`);
 
-  // Test files — shows test infrastructure
   const testFiles = run(
     "find . -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' 2>/dev/null | head -10",
     cwd
@@ -97,20 +82,13 @@ function getWorkspaceSnapshot(cwd: string): string {
   return lines.join("\n");
 }
 
-/** Extract tool call inputs from a response */
-function extractToolInputs<T>(response: Anthropic.Message, toolName: string): T[] {
-  return response.content
-    .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === toolName)
-    .map((b) => b.input as T);
-}
+// ── Tool schemas (provider-agnostic) ─────────────────────────────────
 
-// ── Tool schemas ─────────────────────────────────────────────────────
-
-const PREDICTION_TOOL: Anthropic.Tool = {
+const PREDICTION_TOOL: ToolDef = {
   name: "add_prediction",
   description: "Add a predicted message to send to Claude Code. Call once per message.",
-  input_schema: {
-    type: "object" as const,
+  parameters: {
+    type: "object",
     properties: {
       message: { type: "string", description: "The exact message to send to Claude Code" },
       reasoning: { type: "string", description: "Why this message is important (1 sentence)" },
@@ -120,11 +98,11 @@ const PREDICTION_TOOL: Anthropic.Tool = {
   },
 };
 
-const NEXT_STEP_TOOL: Anthropic.Tool = {
+const NEXT_STEP_TOOL: ToolDef = {
   name: "next_step",
   description: "Predict the single next message to send to Claude Code, or signal that the work is done.",
-  input_schema: {
-    type: "object" as const,
+  parameters: {
+    type: "object",
     properties: {
       done: {
         type: "boolean",
@@ -147,11 +125,11 @@ const NEXT_STEP_TOOL: Anthropic.Tool = {
   },
 };
 
-const PLAN_TOOL: Anthropic.Tool = {
+const PLAN_TOOL: ToolDef = {
   name: "suggest_plan",
   description: "Suggest an overnight plan. Call once per plan.",
-  input_schema: {
-    type: "object" as const,
+  parameters: {
+    type: "object",
     properties: {
       intent: { type: "string", description: "Concise intent string" },
       description: { type: "string", description: "1-2 sentences on what this accomplishes" },
@@ -289,7 +267,6 @@ export async function predictMessages(
 ): Promise<PredictedMessage[]> {
   const client = createClient(config);
 
-  // Parallel: direction extraction + profile load
   const [direction, profile] = await Promise.all([
     extractDirection(cwd, config),
     Promise.resolve(loadProfile()),
@@ -310,16 +287,15 @@ ${workspace}
 Look at your workspace. Given your direction and this intent, what messages would you type into Claude Code?
 Call add_prediction for each (up to ${config.maxMessages}).`;
 
-  const response = await client.messages.create({
+  const results = await client.callWithTools({
     model: config.model,
-    max_tokens: 4096,
+    maxTokens: 4096,
     system: buildPredictSystem(ambition, profileCtx, directionCtx),
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     tools: [PREDICTION_TOOL],
-    tool_choice: { type: "any" },
   });
 
-  return extractToolInputs<PredictedMessage>(response, "add_prediction").slice(
+  return extractToolInputs<PredictedMessage>(results, "add_prediction").slice(
     0,
     config.maxMessages
   );
@@ -346,7 +322,6 @@ export async function predictNext(
   const directionCtx = context.direction
     ? directionToPromptContext(context.direction)
     : "";
-  // Fresh workspace each step — reflects accumulated branch changes
   const workspace = getWorkspaceSnapshot(cwd);
 
   let prompt = `## Intent
@@ -381,27 +356,26 @@ ${workspace}
 
   prompt += `Call next_step with either the next message to send, or done=true if the work is complete.`;
 
-  const response = await client.messages.create({
+  const results = await client.callWithTools({
     model: config.model,
-    max_tokens: 2048,
+    maxTokens: 2048,
     system: buildAdaptiveSystem(context.ambition, context.mode, profileCtx, directionCtx),
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     tools: [NEXT_STEP_TOOL],
-    tool_choice: { type: "any" },
   });
 
-  const results = extractToolInputs<{
+  const steps = extractToolInputs<{
     done: boolean;
     message?: string;
     reasoning: string;
     confidence?: number;
-  }>(response, "next_step");
+  }>(results, "next_step");
 
-  if (results.length === 0) {
+  if (steps.length === 0) {
     return { done: true, reasoning: "No prediction returned" };
   }
 
-  const result = results[0];
+  const result = steps[0];
 
   if (result.done || !result.message) {
     return { done: true, reasoning: result.reasoning };
@@ -421,11 +395,8 @@ ${workspace}
 // ── Suggest plans ────────────────────────────────────────────────────
 
 export interface SuggestPlansOptions {
-  /** Scope to a specific cwd. Omit for cross-project. */
   cwd?: string;
-  /** Specific project names to include (for cross-project mode). */
   projects?: string[];
-  /** Ambition level */
   ambition?: AmbitionLevel;
 }
 
@@ -439,7 +410,6 @@ export async function suggestPlans(
   const profileCtx = profileToPromptContext(profile);
 
   if (opts.cwd) {
-    // ── Single-project mode ──
     const [direction, workspace] = await Promise.all([
       extractDirection(opts.cwd, config),
       Promise.resolve(getWorkspaceSnapshot(opts.cwd)),
@@ -456,19 +426,18 @@ ${workspace}
 Look at your workspace and direction. What would be the best uses of overnight work?
 Call suggest_plan for 3-5 plans. Order by impact.`;
 
-    const response = await client.messages.create({
+    const results = await client.callWithTools({
       model: config.model,
-      max_tokens: 4096,
+      maxTokens: 4096,
       system: buildSuggestSystem(ambition, profileCtx, directionCtx),
-      messages: [{ role: "user", content: prompt }],
+      prompt,
       tools: [PLAN_TOOL],
-      tool_choice: { type: "any" },
     });
 
-    return extractToolInputs<SuggestedPlan>(response, "suggest_plan");
+    return extractToolInputs<SuggestedPlan>(results, "suggest_plan");
   }
 
-  // ── Cross-project mode ──
+  // Cross-project mode
   let discovered = getProjectList();
   if (opts.projects && opts.projects.length > 0) {
     const projSet = new Set(opts.projects);
@@ -478,7 +447,6 @@ Call suggest_plan for 3-5 plans. Order by impact.`;
 
   if (topProjects.length === 0) return [];
 
-  // Extract direction + workspace for each project (parallel)
   const projectContexts = await Promise.all(
     topProjects.map(async (p) => {
       const [direction, workspace] = await Promise.all([
@@ -489,7 +457,6 @@ Call suggest_plan for 3-5 plans. Order by impact.`;
     })
   );
 
-  // Build combined direction context from all projects
   const combinedDirectionCtx = projectContexts
     .map((ctx) => {
       const dirCtx = directionToPromptContext(ctx.direction);
@@ -497,7 +464,6 @@ Call suggest_plan for 3-5 plans. Order by impact.`;
     })
     .join("\n\n---\n\n");
 
-  // Use the first project's direction for the system prompt style
   const primaryDirection = projectContexts[0]?.direction;
   const primaryDirCtx = primaryDirection
     ? directionToPromptContext(primaryDirection)
@@ -512,14 +478,13 @@ ${combinedDirectionCtx}
 Look at each project's workspace and direction. What would be the best overnight plans?
 Call suggest_plan for 3-5 plans. Order by impact.`;
 
-  const response = await client.messages.create({
+  const results = await client.callWithTools({
     model: config.model,
-    max_tokens: 4096,
+    maxTokens: 4096,
     system: buildSuggestSystem(ambition, profileCtx, primaryDirCtx),
-    messages: [{ role: "user", content: prompt }],
+    prompt,
     tools: [PLAN_TOOL],
-    tool_choice: { type: "any" },
   });
 
-  return extractToolInputs<SuggestedPlan>(response, "suggest_plan");
+  return extractToolInputs<SuggestedPlan>(results, "suggest_plan");
 }

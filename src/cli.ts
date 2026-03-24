@@ -375,7 +375,8 @@ program
       maxMessages: "Max steps per run (safety cap)",
       model: "Model for predictions",
       apiKey: "API key",
-      baseUrl: "API base URL (for GLM, Minimax, Kimi, etc.)",
+      baseUrl: "API base URL",
+      apiProvider: "API provider (anthropic or openai)",
     };
     console.log("\n  overnight config:\n");
     for (const [key, value] of Object.entries(config)) {

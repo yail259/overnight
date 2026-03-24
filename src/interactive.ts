@@ -424,10 +424,11 @@ export interface InteractiveOptions {
 }
 
 export async function runInteractive(config: OvernightConfig, opts: InteractiveOptions = {}): Promise<void> {
-  if (!config.apiKey && !process.env.ANTHROPIC_API_KEY) {
+  const hasKey = config.apiKey || process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
+  if (!hasKey) {
     config = await setupApiKey(config);
   }
-  if (!config.apiKey && !process.env.ANTHROPIC_API_KEY) {
+  if (!config.apiKey && !process.env.ANTHROPIC_API_KEY && !process.env.OPENAI_API_KEY) {
     process.exit(0);
   }
 
@@ -440,13 +441,31 @@ export async function runInteractive(config: OvernightConfig, opts: InteractiveO
   const profile = loadProfile();
   const profileAge = profile.updatedAt ? Date.now() - new Date(profile.updatedAt).getTime() : Infinity;
   if (profileAge > 24 * 60 * 60 * 1000) {
-    const msg = profile.updatedAt ? "Refreshing your profile... " : "Building your profile from Claude Code history... ";
-    process.stdout.write(`  ${msg}`);
+    const isFirstTime = !profile.updatedAt;
+    if (isFirstTime) {
+      console.log("\n  ☽ First time? overnight is building a profile of how you code.");
+      console.log("  This takes ~30s — feel free to grab a coffee.\n");
+      process.stdout.write("  Scanning Claude Code sessions... ");
+    } else {
+      process.stdout.write("  ☽ Refreshing your profile... ");
+    }
     try {
       await updateProfile(config);
-      console.log("done.\n");
-    } catch {
-      console.log("skipped.\n");
+      if (isFirstTime) {
+        console.log("done!");
+        const fresh = loadProfile();
+        if (fresh.communicationStyle.tone) {
+          console.log(`  Style: ${fresh.communicationStyle.tone}`);
+        }
+        if (fresh.values.length > 0) {
+          console.log(`  Values: ${fresh.values.slice(0, 4).join(", ")}`);
+        }
+        console.log("");
+      } else {
+        console.log("done.\n");
+      }
+    } catch (err: any) {
+      console.log(isFirstTime ? "skipped (no sessions found).\n" : "skipped.\n");
     }
   }
 

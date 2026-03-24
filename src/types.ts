@@ -111,13 +111,17 @@ export interface OvernightRun {
   status: "running" | "completed" | "stopped" | "failed";
 }
 
+/** API provider — "anthropic" (default) or "openai" for OpenAI-compatible endpoints */
+export type ApiProvider = "anthropic" | "openai";
+
 /** Config stored in ~/.overnight/config.json */
 export interface OvernightConfig {
   claudeBin: string; // path to claude CLI
   maxMessages: number; // max predicted messages per run (safety cap)
   model: string; // model for prediction
-  apiKey: string; // API key (or set ANTHROPIC_API_KEY env)
+  apiKey: string; // API key (or set ANTHROPIC_API_KEY / OPENAI_API_KEY env)
   baseUrl: string; // custom base URL (e.g. for proxy or gateway)
+  apiProvider: ApiProvider; // "anthropic" or "openai" (default: "anthropic")
 }
 
 export const DEFAULT_CONFIG: OvernightConfig = {
@@ -126,6 +130,7 @@ export const DEFAULT_CONFIG: OvernightConfig = {
   model: "claude-sonnet-4-6",
   apiKey: "",
   baseUrl: "",
+  apiProvider: "anthropic",
 };
 
 /** Live run state for the TUI status bar */

@@ -12,17 +12,32 @@ import { TEXT, SEMANTIC, CHROME, AMBITION_COLOR } from "./theme.js";
 
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"];
 
-export function ThinkingIndicator() {
+const THINKING_MESSAGES = [
+  "Thinking...",
+  "Reading your workspace...",
+  "Analyzing patterns...",
+  "Predicting next steps...",
+];
+
+export function ThinkingIndicator({ stage }: { stage?: string }) {
   const [frame, setFrame] = useState(0);
+  const [msgIdx, setMsgIdx] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setFrame((f) => (f + 1) % SPINNER_FRAMES.length), 150);
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    if (stage) return; // don't cycle if stage is explicit
+    const timer = setInterval(() => setMsgIdx((i) => (i + 1) % THINKING_MESSAGES.length), 3000);
+    return () => clearInterval(timer);
+  }, [stage]);
+
+  const label = stage || THINKING_MESSAGES[msgIdx];
 
   return (
     <Box marginLeft={2} marginTop={1}>
       <Text color={SEMANTIC.accent}>{SPINNER_FRAMES[frame]}</Text>
-      <Text color={TEXT.secondary}>{" Thinking..."}</Text>
+      <Text color={TEXT.muted}>{" " + label}</Text>
     </Box>
   );
 }
@@ -71,7 +86,7 @@ export function RunStatusBar({ run }: { run: RunState }) {
   const displayElapsed = run.status === "running" || run.status === "starting" ? elapsed : run.elapsed;
 
   const statusConfig = {
-    completed: { icon: "✓", color: SEMANTIC.success, label: "Completed" },
+    completed: { icon: "✓", color: SEMANTIC.success, label: "Done" },
     failed:    { icon: "✗", color: SEMANTIC.danger,  label: "Failed" },
     stopped:   { icon: "■", color: SEMANTIC.warning, label: "Stopped" },
     starting:  { icon: "◐", color: SEMANTIC.accent,  label: "Starting" },
@@ -81,6 +96,11 @@ export function RunStatusBar({ run }: { run: RunState }) {
   const { icon, color, label } = statusConfig[run.status];
   const current = run.current + (run.status === "running" ? 1 : 0);
   const modeLabel = run.mode === "dont-stop" ? "Don't stop" : "Plan";
+
+  // Celebratory completion message
+  const completionNote = run.status === "completed" && run.passed > 0
+    ? ` ${CHROME.dot} branch ready for review`
+    : "";
 
   return (
     <Box flexShrink={0} flexDirection="column" marginLeft={2} marginTop={1}>
@@ -93,10 +113,11 @@ export function RunStatusBar({ run }: { run: RunState }) {
         {run.total > 0 && (
           <Text color={TEXT.secondary}>step {current}</Text>
         )}
-        {run.passed > 0 && <Text color={SEMANTIC.success}>{"✓" + run.passed}</Text>}
-        {run.failed > 0 && <Text color={SEMANTIC.danger}>{"✗" + run.failed}</Text>}
-        <Text color={TEXT.muted}>{CHROME.dot}</Text>
+        {run.passed > 0 && <Text color={SEMANTIC.success}>{" ✓" + run.passed}</Text>}
+        {run.failed > 0 && <Text color={SEMANTIC.danger}>{" ✗" + run.failed}</Text>}
+        <Text color={TEXT.muted}>{" " + CHROME.dot + " "}</Text>
         <Text color={TEXT.muted}>{formatDuration(displayElapsed)}</Text>
+        {completionNote && <Text color={SEMANTIC.success}>{completionNote}</Text>}
       </Box>
       {run.status === "running" && run.total > 0 && (
         <Box marginLeft={2}>
@@ -132,7 +153,6 @@ export function StatusBar({
   const width = useTerminalWidth();
   const ambColor = AMBITION_COLOR[ambition] ?? TEXT.muted;
 
-  // Context indicator color
   let contextColor: string = SEMANTIC.success;
   if (contextUsed && contextMax) {
     const ratio = contextUsed / contextMax;
@@ -142,6 +162,7 @@ export function StatusBar({
 
   return (
     <Box marginLeft={2}>
+      <Text color={TEXT.muted}>{CHROME.moon + " "}</Text>
       <Text color={TEXT.muted}>{model}</Text>
       {contextUsed !== undefined && contextMax !== undefined && (
         <>
@@ -174,10 +195,14 @@ export function RetryCountdown({ countdown, attempt }: { countdown: number; atte
     return () => clearInterval(timer);
   }, [countdown]);
 
+  const message = attempt <= 2
+    ? "Rate limited — retrying in "
+    : "Still rate limited (peak hours?) — retrying in ";
+
   return (
     <Box marginLeft={2} marginTop={1}>
       <Text color={SEMANTIC.warning}>{"⏳ "}</Text>
-      <Text color={TEXT.secondary}>{"Rate limited — retrying in "}</Text>
+      <Text color={TEXT.muted}>{message}</Text>
       <Text color={TEXT.primary} bold>{remaining + "s"}</Text>
       <Text color={TEXT.muted}>{` (attempt ${attempt})`}</Text>
     </Box>

@@ -3,11 +3,11 @@
  * Uses Anthropic SDK native tool_use for structured extraction.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { getAllConversationTurns, getConversationSummary } from "./history.js";
 import type { OvernightConfig, UserDirection } from "./types.js";
 import { OVERNIGHT_DIR } from "./types.js";
+import { createClient, extractToolInputs, type ToolDef } from "./api.js";
 import { execSync } from "child_process";
 
 export const PROFILE_FILE = `${OVERNIGHT_DIR}/profile.json`;
@@ -30,12 +30,12 @@ const DEFAULT_PROFILE: UserProfile = {
   values: [],
 };
 
-const PROFILE_TOOLS: Anthropic.Tool[] = [
+const PROFILE_TOOLS: ToolDef[] = [
   {
     name: "set_communication_style",
     description: "Set the user's communication style",
-    input_schema: {
-      type: "object" as const,
+    parameters: {
+      type: "object",
       properties: {
         tone: { type: "string", description: "e.g. 'terse, imperative, informal'" },
         messageLength: { type: "string", description: "e.g. 'short (1-2 sentences)'" },
@@ -47,8 +47,8 @@ const PROFILE_TOOLS: Anthropic.Tool[] = [
   {
     name: "set_coding_patterns",
     description: "Set the user's coding patterns and preferences",
-    input_schema: {
-      type: "object" as const,
+    parameters: {
+      type: "object",
       properties: {
         languages: { type: "array", items: { type: "string" } },
         frameworks: { type: "array", items: { type: "string" } },
@@ -61,8 +61,8 @@ const PROFILE_TOOLS: Anthropic.Tool[] = [
   {
     name: "add_project",
     description: "Add or update a project in the profile",
-    input_schema: {
-      type: "object" as const,
+    parameters: {
+      type: "object",
       properties: {
         name: { type: "string" },
         description: { type: "string" },
@@ -75,8 +75,8 @@ const PROFILE_TOOLS: Anthropic.Tool[] = [
   {
     name: "set_values",
     description: "Set what the user values in their work",
-    input_schema: {
-      type: "object" as const,
+    parameters: {
+      type: "object",
       properties: {
         values: { type: "array", items: { type: "string" } },
       },
@@ -122,18 +122,14 @@ export async function updateProfile(config: OvernightConfig): Promise<UserProfil
     ? `\n\n## Existing Profile (update, don't replace)\n${JSON.stringify(existing, null, 2)}`
     : "";
 
-  const client = new Anthropic({
-    apiKey: config.apiKey || undefined,
-    baseURL: config.baseUrl || undefined,
-  });
+  const client = createClient(config);
 
-  const response = await client.messages.create({
+  const results = await client.callWithTools({
     model: config.model,
-    max_tokens: 4096,
+    maxTokens: 4096,
     system: PROFILE_SYSTEM,
-    messages: [{ role: "user", content: `## Recent Conversation History\n${summary}${existingContext}\n\nAnalyze and call the tools.` }],
+    prompt: `## Recent Conversation History\n${summary}${existingContext}\n\nAnalyze and call the tools.`,
     tools: PROFILE_TOOLS,
-    tool_choice: { type: "any" },
   });
 
   const profile: UserProfile = {
@@ -142,11 +138,10 @@ export async function updateProfile(config: OvernightConfig): Promise<UserProfil
     turnsAnalyzed: turns.length,
   };
 
-  for (const block of response.content) {
-    if (block.type !== "tool_use") continue;
-    const input = block.input as any;
+  for (const result of results) {
+    const input = result.input as any;
 
-    switch (block.name) {
+    switch (result.name) {
       case "set_communication_style":
         profile.communicationStyle = {
           tone: input.tone ?? "",
@@ -213,11 +208,11 @@ export function profileToPromptContext(profile: UserProfile): string {
 
 // ── Direction extraction ─────────────────────────────────────────────
 
-const DIRECTION_TOOL: Anthropic.Tool = {
+const DIRECTION_TOOL: ToolDef = {
   name: "set_direction",
   description: "Set the user's current working direction — trajectory, NOT tasks",
-  input_schema: {
-    type: "object" as const,
+  parameters: {
+    type: "object",
     properties: {
       area: {
         type: "string",
@@ -309,31 +304,19 @@ export async function extractDirection(
 
   const summary = getConversationSummary(turns);
 
-  const client = new Anthropic({
-    apiKey: config.apiKey || undefined,
-    baseURL: config.baseUrl || undefined,
-  });
+  const client = createClient(config);
 
-  const response = await client.messages.create({
+  const results = await client.callWithTools({
     model: config.model,
-    max_tokens: 2048,
+    maxTokens: 2048,
     system: DIRECTION_SYSTEM,
-    messages: [
-      {
-        role: "user",
-        content: `## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Call set_direction.`,
-      },
-    ],
+    prompt: `## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Call set_direction.`,
     tools: [DIRECTION_TOOL],
-    tool_choice: { type: "any" },
   });
 
-  // Extract tool call result
-  const toolBlock = response.content.find(
-    (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "set_direction"
-  );
+  const directionResults = extractToolInputs<any>(results, "set_direction");
 
-  if (!toolBlock) {
+  if (directionResults.length === 0) {
     return {
       extractedAt: new Date().toISOString(),
       cwd,
@@ -346,7 +329,7 @@ export async function extractDirection(
     };
   }
 
-  const input = toolBlock.input as any;
+  const input = directionResults[0];
   return {
     extractedAt: new Date().toISOString(),
     cwd,
