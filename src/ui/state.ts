@@ -22,6 +22,7 @@ export function createInitialState(overrides?: Partial<AppState>): AppState {
     retryState: null,
     ctrlCPressed: 0,
     sessionId: `s-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    toasts: [],
     ...overrides,
   };
 }
@@ -91,6 +92,12 @@ export function appReducer(state: AppState, action: AppAction): AppState {
 
     case "CTRL_C_PRESSED":
       return { ...state, ctrlCPressed: Date.now() };
+
+    case "ADD_TOAST":
+      return { ...state, toasts: [...state.toasts, action.toast] };
+
+    case "EXPIRE_TOASTS":
+      return { ...state, toasts: state.toasts.filter((t) => t.expiresAt > Date.now()) };
 
     default:
       return state;

@@ -1,14 +1,16 @@
 /**
- * Main App component — orchestrates all TUI state and components.
- * Uses useReducer for state management.
- * Implements: input queuing (#2), cancel (#3), Ctrl+C (#16), Ctrl+L (#23),
- *   Escape clear queue (#7), scroll mode (#20), display mode toggle (#27).
+ * Main App component — three-zone layout:
+ *   Zone 1: Message history (Static, native terminal scrollback)
+ *   Zone 2: Status area (streaming, loading, run status — dynamic)
+ *   Zone 3: Composer (toasts, status bar, shortcuts, command dropdown, input)
+ *
+ * Uses useReducer for state management. Toast system for ephemeral feedback.
  */
 
 import React, { useReducer, useCallback, useEffect, useRef } from "react";
 import { Box, Text, Static, useApp, useInput, useStdout } from "ink";
 import type { AmbitionLevel, ProjectInfo, RunState, PendingApproval, RunMode } from "../types.js";
-import type { Message, MessageContext, AppState } from "./types.js";
+import type { Message, MessageContext, AppState, ToastMessage } from "./types.js";
 import { appReducer, createInitialState } from "./state.js";
 import { ThinkingIndicator, RunStatusBar, StatusBar, RetryCountdown } from "./status.js";
 import { StreamingArea } from "./streaming.js";
@@ -17,11 +19,23 @@ import { ProjectSelector } from "./project-select.js";
 import { MessageLine } from "./messages.js";
 import { ScrollableMessages } from "./scrollable.js";
 import { TextInputBar } from "./text-input.js";
+import { ToastDisplay } from "./toast.js";
+import { CommandDropdown, getMatchingCommands } from "./command-dropdown.js";
+import { ShortcutsBar } from "./shortcuts.js";
 import { useInputHistory } from "./history.js";
 import { matchCommand } from "./commands.js";
 import { useTerminalWidth } from "./hooks.js";
-import { TEXT } from "./theme.js";
+import { TEXT, CHROME } from "./theme.js";
 import type { OvernightConfig } from "../types.js";
+
+// ── Command list for dropdown ──────────────────────────────────────
+
+const ALL_COMMANDS = [
+  { name: "clear", description: "Clear conversation" },
+  { name: "compact", description: "Compress context" },
+  { name: "help", description: "Show commands & keys" },
+  { name: "verbose", description: "Toggle display mode" },
+];
 
 // ── App Props ───────────────────────────────────────────────────────
 
@@ -66,20 +80,40 @@ function App({
   const abortControllerRef = useRef<AbortController>(new AbortController());
   const processingRef = useRef(false);
 
-  // ── Helpers ────────────────────────────────────────────────────────
+  // ── Toast helper ─────────────────────────────────────────────────
+
+  const addToast = useCallback(
+    (text: string, type: "info" | "warning" | "success" = "info", durationMs = 3000) => {
+      const toast: ToastMessage = {
+        id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 4)}`,
+        text,
+        type,
+        expiresAt: Date.now() + durationMs,
+      };
+      dispatch({ type: "ADD_TOAST", toast });
+    },
+    [],
+  );
+
+  // Expire toasts periodically
+  useEffect(() => {
+    const timer = setInterval(() => dispatch({ type: "EXPIRE_TOASTS" }), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // ── Helpers ──────────────────────────────────────────────────────
 
   const addMessage = useCallback((msg: Message) => {
     dispatch({ type: "ADD_MESSAGE", msg });
   }, []);
 
-  // ── Process a message (send to API) ────────────────────────────────
+  // ── Process a message (send to API) ─────────────────────────────
 
   const processMessage = useCallback(
     async (userText: string) => {
       dispatch({ type: "SET_LOADING", loading: true });
       processingRef.current = true;
 
-      // Fresh abort controller for this message
       abortControllerRef.current = new AbortController();
 
       const ctx: MessageContext = {
@@ -112,7 +146,7 @@ function App({
     [addMessage, onMessage, state.ambition],
   );
 
-  // ── Queue drain effect ─────────────────────────────────────────────
+  // ── Queue drain effect ──────────────────────────────────────────
 
   useEffect(() => {
     if (!state.loading && !processingRef.current && state.inputQueue.length > 0) {
@@ -123,20 +157,18 @@ function App({
     }
   }, [state.loading, state.inputQueue, processMessage, addMessage]);
 
-  // ── Handle submit ──────────────────────────────────────────────────
+  // ── Handle submit ───────────────────────────────────────────────
 
   const handleSubmit = useCallback(
     (value: string) => {
       const trimmed = value.trim();
 
-      // Exit commands — always immediate
       if (trimmed.toLowerCase() === "quit" || trimmed.toLowerCase() === "exit") {
-        addMessage({ id: `sys-${Date.now()}`, type: "system", text: "Goodnight!", timestamp: Date.now() });
-        setTimeout(() => exit(), 100);
+        addToast("Goodnight!", "info");
+        setTimeout(() => exit(), 300);
         return;
       }
 
-      // Slash commands
       const cmd = matchCommand(trimmed);
       if (cmd) {
         dispatch({ type: "SET_INPUT", value: "" });
@@ -149,24 +181,17 @@ function App({
       history.push(userText);
 
       if (state.loading || processingRef.current) {
-        // Queue the message
         dispatch({ type: "QUEUE_INPUT", text: userText });
-        addMessage({
-          id: `queued-${Date.now()}`,
-          type: "system",
-          text: `Queued: "${userText.length > 60 ? userText.slice(0, 57) + "..." : userText}"`,
-          timestamp: Date.now(),
-        });
+        addToast(`Queued: "${userText.length > 50 ? userText.slice(0, 47) + "..." : userText}"`, "info");
       } else {
-        // Process immediately
         addMessage({ id: `user-${Date.now()}`, type: "user", text: userText, timestamp: Date.now() });
         processMessage(userText);
       }
     },
-    [addMessage, exit, state.loading, processMessage, history, onCompact, onClear],
+    [addMessage, addToast, exit, state.loading, processMessage, history, onCompact, onClear],
   );
 
-  // ── Handle approve/cancel ──────────────────────────────────────────
+  // ── Handle approve/cancel ───────────────────────────────────────
 
   const handleApprove = useCallback((mode: RunMode) => {
     if (!state.pendingApproval) return;
@@ -178,49 +203,46 @@ function App({
 
   const handleCancel = useCallback(() => {
     dispatch({ type: "SET_APPROVAL", approval: null });
-    addMessage({ id: `cancel-${Date.now()}`, type: "user", text: "✗ Cancelled", timestamp: Date.now() });
+    addToast("Cancelled", "info");
     processMessage("Cancelled. Don't run it.");
-  }, [addMessage, processMessage]);
+  }, [addToast, processMessage]);
 
-  // ── Global keybindings ─────────────────────────────────────────────
+  // ── Global keybindings ──────────────────────────────────────────
 
   useInput(
     (ch, key) => {
-      // Shift+Tab cycles ambition (always responsive)
+      // Shift+Tab cycles ambition
       if (key.shift && key.tab && !state.selectingProjects) {
         dispatch({ type: "CYCLE_AMBITION" });
+        addToast(`Ambition: ${["safe", "normal", "yolo"][(["safe", "normal", "yolo"].indexOf(state.ambition) + 1) % 3]}`, "info", 1500);
         return;
       }
 
-      // Ctrl+C — exit with double-press protection
+      // Ctrl+C
       if (key.ctrl && ch === "c") {
-        // If streaming, abort first
         if (state.streamingText !== null) {
           onAbort();
           abortControllerRef.current.abort();
-          addMessage({ id: `abort-${Date.now()}`, type: "system", text: "Generation cancelled.", timestamp: Date.now() });
+          addToast("Generation cancelled", "warning");
           dispatch({ type: "SET_STREAMING", text: null });
           dispatch({ type: "SET_LOADING", loading: false });
           return;
         }
-        // If queue, clear it
         if (state.inputQueue.length > 0) {
           dispatch({ type: "CLEAR_QUEUE" });
-          addMessage({ id: `sys-${Date.now()}`, type: "system", text: "Queue cleared.", timestamp: Date.now() });
+          addToast("Queue cleared", "info");
           return;
         }
-        // Double-press to exit
         if (Date.now() - state.ctrlCPressed < 2000) {
           exit();
           return;
         }
         dispatch({ type: "CTRL_C_PRESSED" });
-        addMessage({
-          id: `sys-${Date.now()}`,
-          type: "system",
-          text: state.loading ? "Press Ctrl+C again to exit (current task will be lost)." : "Press Ctrl+C again to exit.",
-          timestamp: Date.now(),
-        });
+        addToast(
+          state.loading ? "Press Ctrl+C again to exit (task will be lost)" : "Press Ctrl+C again to exit",
+          "warning",
+          2000,
+        );
         return;
       }
 
@@ -233,6 +255,7 @@ function App({
       // Ctrl+V — toggle display mode
       if (key.ctrl && ch === "v") {
         dispatch({ type: "TOGGLE_DISPLAY_MODE" });
+        addToast(`Display: ${state.displayMode === "compact" ? "verbose" : "compact"}`, "info", 1500);
         return;
       }
 
@@ -241,69 +264,60 @@ function App({
         if (state.streamingText !== null) {
           onAbort();
           abortControllerRef.current.abort();
-          addMessage({ id: `abort-${Date.now()}`, type: "system", text: "Generation cancelled.", timestamp: Date.now() });
+          addToast("Generation cancelled", "warning");
           dispatch({ type: "SET_STREAMING", text: null });
           dispatch({ type: "SET_LOADING", loading: false });
           return;
         }
         if (state.inputQueue.length > 0) {
           dispatch({ type: "CLEAR_QUEUE" });
-          addMessage({ id: `sys-${Date.now()}`, type: "system", text: "Queue cleared.", timestamp: Date.now() });
+          addToast("Queue cleared", "info");
           return;
         }
       }
 
-      // Scroll mode: Shift+Up/Down to enter, j/k to scroll, Esc to exit
+      // Scroll mode
       if (key.shift && key.upArrow && !state.scrollMode) {
         dispatch({ type: "ENTER_SCROLL_MODE" });
         return;
       }
       if (state.scrollMode) {
-        if (ch === "j" || key.downArrow) {
-          dispatch({ type: "SCROLL", delta: 1 });
-          return;
-        }
-        if (ch === "k" || key.upArrow) {
-          dispatch({ type: "SCROLL", delta: -1 });
-          return;
-        }
-        if (key.escape || key.return) {
-          dispatch({ type: "EXIT_SCROLL_MODE" });
-          return;
-        }
+        if (ch === "j" || key.downArrow) { dispatch({ type: "SCROLL", delta: 1 }); return; }
+        if (ch === "k" || key.upArrow) { dispatch({ type: "SCROLL", delta: -1 }); return; }
+        if (key.escape || key.return) { dispatch({ type: "EXIT_SCROLL_MODE" }); return; }
       }
     },
     { isActive: true },
   );
 
-  // ── Handle projects selected ───────────────────────────────────────
+  // ── Handle projects selected ────────────────────────────────────
 
   const handleProjectsConfirmed = useCallback(
     (selected: string[]) => {
       dispatch({ type: "SET_SELECTING_PROJECTS", value: false });
       onProjectsSelected?.(selected);
-      addMessage({
-        id: `sys-proj-${Date.now()}`,
-        type: "system",
-        text: `Selected ${selected.length} projects: ${selected.join(", ")}`,
-        timestamp: Date.now(),
-      });
+      addToast(`Selected ${selected.length} projects`, "success");
     },
-    [addMessage, onProjectsSelected],
+    [addToast, onProjectsSelected],
   );
 
-  // ── Project selection phase ────────────────────────────────────────
+  // ── Command dropdown state ──────────────────────────────────────
+
+  const matchingCommands = getMatchingCommands(state.input, ALL_COMMANDS);
+  const showDropdown = matchingCommands.length > 0;
+
+  // ── Project selection phase ─────────────────────────────────────
 
   if (state.selectingProjects && projectList) {
     return (
       <Box flexDirection="column" padding={1}>
-        <Text color={TEXT.muted}>{"  overnight"}</Text>
+        <Text color={TEXT.muted}>{"  " + CHROME.moon + " overnight"}</Text>
         <ProjectSelector projects={projectList} onConfirm={handleProjectsConfirmed} />
       </Box>
     );
   }
 
-  // ── Scroll mode view ───────────────────────────────────────────────
+  // ── Scroll mode ─────────────────────────────────────────────────
 
   if (state.scrollMode) {
     return (
@@ -314,42 +328,63 @@ function App({
           scrollMode={true}
           scrollOffset={state.scrollOffset}
         />
+        <ShortcutsBar
+          isStreaming={false}
+          isLoading={false}
+          hasApproval={false}
+          hasQueue={false}
+          isScrollMode={true}
+        />
       </Box>
     );
   }
 
-  // ── Main view ──────────────────────────────────────────────────────
+  // ── Main three-zone layout ──────────────────────────────────────
 
   return (
     <>
-      {/* Static message history — rendered once, native terminal scrollback */}
+      {/* ZONE 1: Message history — rendered once, native scrollback */}
       <Static items={state.messages}>
         {(msg) => <MessageLine key={msg.id} msg={msg} displayMode={state.displayMode} width={width} />}
       </Static>
 
-      {/* Dynamic footer — only this portion re-renders */}
+      {/* ZONE 2: Dynamic status area */}
       <Box flexDirection="column">
-        {/* Streaming text or loading spinner */}
         {state.streamingText !== null ? (
           <StreamingArea text={state.streamingText} />
         ) : state.loading ? (
           <ThinkingIndicator />
         ) : null}
 
-        {/* Retry countdown */}
-        {state.retryState && <RetryCountdown countdown={state.retryState.countdown} attempt={state.retryState.attempt} />}
+        {state.retryState && (
+          <RetryCountdown countdown={state.retryState.countdown} attempt={state.retryState.attempt} />
+        )}
 
-        {/* Run status bar with progress */}
         {state.runState && <RunStatusBar run={state.runState} />}
+      </Box>
 
-        {/* Status bar (model, ambition) */}
+      {/* ZONE 3: Composer — toasts, status, dropdown, input, shortcuts */}
+      <Box flexDirection="column" flexShrink={0}>
+        {/* Toasts */}
+        <ToastDisplay toasts={state.toasts} />
+
+        {/* Status bar */}
         <StatusBar
           model={config.model}
           ambition={state.ambition}
           queueCount={state.inputQueue.length}
         />
 
-        {/* Approval bar OR input bar */}
+        {/* Command dropdown (visible when typing /) */}
+        {showDropdown && (
+          <CommandDropdown
+            commands={ALL_COMMANDS}
+            filter={state.input.slice(1)}
+            activeIndex={0}
+          />
+        )}
+
+        {/* Approval bar OR input */}
         {state.pendingApproval ? (
           <ApprovalBar approval={state.pendingApproval} onApprove={handleApprove} onCancel={handleCancel} />
         ) : (
@@ -363,6 +398,15 @@ function App({
             history={history}
           />
         )}
+
+        {/* Contextual shortcuts */}
+        <ShortcutsBar
+          isStreaming={state.streamingText !== null}
+          isLoading={state.loading}
+          hasApproval={!!state.pendingApproval}
+          hasQueue={state.inputQueue.length > 0}
+          isScrollMode={false}
+        />
       </Box>
     </>
   );

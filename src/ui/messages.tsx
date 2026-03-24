@@ -1,19 +1,38 @@
 /**
- * Message rendering with markdown support, timestamps, and display modes.
- *
- * No dimColor on any readable text. Hierarchy via bold/color only.
+ * Message rendering with markdown support, diff detection, timestamps, and display modes.
  */
 
 import React from "react";
 import { Box, Text } from "ink";
 import type { Message, DisplayMode } from "./types.js";
-import { renderMarkdown } from "./markdown.js";
+import { renderMarkdown, renderDiff } from "./markdown.js";
 import { useTerminalWidth } from "./hooks.js";
 import { TEXT, SEMANTIC, CHROME } from "./theme.js";
 
 function formatTime(ts: number): string {
   const d = new Date(ts);
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Detect if text contains a diff */
+function containsDiff(text: string): boolean {
+  const lines = text.split("\n");
+  let diffLines = 0;
+  for (const line of lines) {
+    if (line.startsWith("+") || line.startsWith("-") || line.startsWith("@@") || line.startsWith("diff --git")) {
+      diffLines++;
+    }
+    if (diffLines >= 3) return true;
+  }
+  return false;
+}
+
+/** Render a tool message, applying diff coloring when appropriate */
+function renderToolText(text: string): string {
+  if (containsDiff(text)) {
+    return renderDiff(text);
+  }
+  return text;
 }
 
 export function MessageLine({
@@ -69,14 +88,18 @@ export function MessageLine({
       );
     }
 
-    case "tool":
+    case "tool": {
+      const toolText = renderToolText(msg.text);
       return (
-        <Box marginLeft={2}>
+        <Box marginLeft={2} flexDirection="column">
           {timestamp}
-          <Text color={SEMANTIC.tool}>{`  ${CHROME.gear} `}</Text>
-          <Text color={TEXT.muted}>{msg.text}</Text>
+          <Box>
+            <Text color={SEMANTIC.tool}>{`  ${CHROME.gear} `}</Text>
+            <Text>{toolText}</Text>
+          </Box>
         </Box>
       );
+    }
 
     case "system":
       return (

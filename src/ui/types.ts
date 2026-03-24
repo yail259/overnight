@@ -27,6 +27,13 @@ export interface InputHistoryEntry {
 
 export type DisplayMode = "compact" | "verbose";
 
+export interface ToastMessage {
+  id: string;
+  text: string;
+  type: "info" | "warning" | "success";
+  expiresAt: number;
+}
+
 export interface AppState {
   messages: Message[];
   input: string;
@@ -41,8 +48,9 @@ export interface AppState {
   scrollMode: boolean;
   scrollOffset: number;
   retryState: { countdown: number; attempt: number } | null;
-  ctrlCPressed: number; // timestamp of last Ctrl+C press for double-press detection
+  ctrlCPressed: number;
   sessionId: string;
+  toasts: ToastMessage[];
 }
 
 export type AppAction =
@@ -64,7 +72,9 @@ export type AppAction =
   | { type: "SCROLL"; delta: number }
   | { type: "SET_RETRY"; state: { countdown: number; attempt: number } | null }
   | { type: "SET_SELECTING_PROJECTS"; value: boolean }
-  | { type: "CTRL_C_PRESSED" };
+  | { type: "CTRL_C_PRESSED" }
+  | { type: "ADD_TOAST"; toast: ToastMessage }
+  | { type: "EXPIRE_TOASTS" };
 
 /** Context passed to onMessage handler */
 export interface MessageContext {
