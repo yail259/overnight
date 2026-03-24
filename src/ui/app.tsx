@@ -15,7 +15,8 @@ import { StreamingArea } from "./streaming.js";
 import { ApprovalBar } from "./approval.js";
 import { ProjectSelector } from "./project-select.js";
 import { MessageLine } from "./messages.js";
-import { InputBar } from "./input.js";
+import { ScrollableMessages } from "./scrollable.js";
+import { TextInputBar } from "./text-input.js";
 import { useInputHistory } from "./history.js";
 import { matchCommand } from "./commands.js";
 import { useTerminalWidth } from "./hooks.js";
@@ -305,23 +306,14 @@ function App({
   // ── Scroll mode view ───────────────────────────────────────────────
 
   if (state.scrollMode) {
-    const rows = stdout?.rows ?? 24;
-    const viewportSize = Math.max(5, rows - 6);
-    const start = Math.max(0, state.messages.length - viewportSize - state.scrollOffset);
-    const end = Math.min(state.messages.length, start + viewportSize);
-    const visible = state.messages.slice(start, end);
-
     return (
       <Box flexDirection="column">
-        {visible.map((msg) => (
-          <MessageLine key={msg.id} msg={msg} displayMode={state.displayMode} width={width} />
-        ))}
-        <Box marginLeft={2}>
-          <Text color={TEXT.muted}>
-            {"↑↓ scroll · Esc exit · "}
-            {`${start + 1}–${end} of ${state.messages.length}`}
-          </Text>
-        </Box>
+        <ScrollableMessages
+          messages={state.messages}
+          displayMode={state.displayMode}
+          scrollMode={true}
+          scrollOffset={state.scrollOffset}
+        />
       </Box>
     );
   }
@@ -361,7 +353,7 @@ function App({
         {state.pendingApproval ? (
           <ApprovalBar approval={state.pendingApproval} onApprove={handleApprove} onCancel={handleCancel} />
         ) : (
-          <InputBar
+          <TextInputBar
             input={state.input}
             setInput={(v) => dispatch({ type: "SET_INPUT", value: v })}
             onSubmit={handleSubmit}

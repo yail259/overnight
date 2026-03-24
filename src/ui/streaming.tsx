@@ -1,6 +1,9 @@
 /**
- * StreamingArea — shows live streaming text with animated cursor and word wrap.
- * No dimColor — all text is readable.
+ * StreamingArea — shows live streaming text with animated cursor,
+ * word wrap, and basic inline formatting awareness.
+ *
+ * Detects code blocks in progress and applies dimmer styling to
+ * distinguish code from prose during streaming.
  */
 
 import React, { useState, useEffect } from "react";
@@ -17,37 +20,53 @@ export function StreamingArea({ text }: { text: string }) {
     return () => clearInterval(timer);
   }, []);
 
-  const maxWidth = Math.max(40, width - 6);
-  let displayText = text;
-  try {
-    const lines = text.split("\n");
-    const wrapped: string[] = [];
-    for (const line of lines) {
-      if (line.length <= maxWidth) {
-        wrapped.push(line);
-      } else {
-        let remaining = line;
-        while (remaining.length > maxWidth) {
-          let breakAt = remaining.lastIndexOf(" ", maxWidth);
-          if (breakAt <= 0) breakAt = maxWidth;
-          wrapped.push(remaining.slice(0, breakAt));
-          remaining = remaining.slice(breakAt).trimStart();
-        }
-        if (remaining) wrapped.push(remaining);
-      }
+  const maxWidth = Math.max(40, width - 8);
+  const maxLines = Math.min(20, Math.floor((process.stdout.rows || 24) / 2));
+
+  // Split into lines and detect code blocks
+  const rawLines = text.split("\n");
+  const displayLines: { text: string; isCode: boolean }[] = [];
+  let inCodeBlock = false;
+
+  for (const line of rawLines) {
+    if (line.startsWith("```")) {
+      inCodeBlock = !inCodeBlock;
+      displayLines.push({ text: line, isCode: true });
+      continue;
     }
-    const maxLines = Math.min(20, Math.floor((process.stdout.rows || 24) / 2));
-    displayText = wrapped.slice(-maxLines).join("\n");
-  } catch {
-    displayText = text;
+
+    // Word wrap
+    if (line.length <= maxWidth) {
+      displayLines.push({ text: line, isCode: inCodeBlock });
+    } else {
+      let remaining = line;
+      while (remaining.length > maxWidth) {
+        let breakAt = remaining.lastIndexOf(" ", maxWidth);
+        if (breakAt <= 0) breakAt = maxWidth;
+        displayLines.push({ text: remaining.slice(0, breakAt), isCode: inCodeBlock });
+        remaining = remaining.slice(breakAt).trimStart();
+      }
+      if (remaining) displayLines.push({ text: remaining, isCode: inCodeBlock });
+    }
   }
+
+  // Show last N lines
+  const visible = displayLines.slice(-maxLines);
 
   return (
     <Box flexShrink={0} marginLeft={2} flexDirection="column" marginTop={1}>
-      <Text color={TEXT.secondary}>{"  " + displayText}</Text>
-      <Box>
+      {visible.map((line, i) => (
+        <Box key={i} marginLeft={2}>
+          {line.isCode ? (
+            <Text color={TEXT.muted}>{line.text}</Text>
+          ) : (
+            <Text color={TEXT.secondary}>{line.text}</Text>
+          )}
+        </Box>
+      ))}
+      <Box marginLeft={2}>
         <Text color={SEMANTIC.accent}>
-          {"    " + (cursorVisible ? CHROME.cursor : " ")}
+          {cursorVisible ? CHROME.cursor : " "}
         </Text>
       </Box>
     </Box>
