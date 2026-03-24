@@ -6,9 +6,36 @@
 - [x] User profile extraction from Claude Code sessions
 - [x] Interactive TUI with React Ink
 - [x] Landing page (workovernight.com)
-- [ ] OpenAI-compatible API support (API abstraction layer)
-- [ ] UX polish (loading states, onboarding, expectation management)
-- [ ] CLI theme alignment with landing page design tokens
+- [x] OpenAI-compatible API support (API abstraction layer)
+- [x] UX polish (loading states, onboarding, expectation management)
+- [x] CLI theme alignment with landing page design tokens
+- [x] Scrollable message area, cursor-aware input, streaming code awareness
+
+## v0.4.1 — TUI polish (learned from Gemini CLI)
+
+### Composer pattern
+Restructure the input area into a Composer component that stacks: loading state, context usage, toast messages, suggestions, and the input prompt. Currently these are scattered across app.tsx. A unified Composer creates a predictable, dense bottom panel.
+
+### Toast system
+Transient messages that appear above input and auto-dismiss after 2-3 seconds. Replace permanent system messages for ephemeral feedback: "Press Ctrl+C again to exit", "Queue cleared", "Ambition: yolo". Keep system messages in history only for meaningful events (run started, completed, errors).
+
+### Slash command autocomplete dropdown
+When user types `/`, show a visual dropdown of matching commands with descriptions and active-item highlighting. Currently tab-complete works but is invisible — the user has to know commands exist.
+
+### Contextual shortcuts help
+Show available keyboard shortcuts below the input area, contextual to current state: during streaming show "Esc cancel", during approval show "1/2 to select mode", during idle show "⇧Tab ambition · /help commands".
+
+### Diff rendering in messages
+Use the existing `renderDiff()` for tool messages that contain diffs. Show colored +/- lines inline instead of raw text. Especially valuable for execution result summaries.
+
+### Session browser
+Enhance `--resume` to show a browsable list of past sessions with: timestamp, intent, step count, pass/fail stats. Currently just grabs latest.
+
+### Responsive layout
+Three-zone architecture: scrollable message area (top, grows), optional run status (middle, fixed), composer (bottom, fixed). Explicit height management so the input never gets pushed off-screen during long outputs.
+
+### Future: theme system
+User-selectable themes (dracula, solarized, github-dark, etc.). Low priority but high delight factor. The current palette is fixed — a theme system would let users match their terminal aesthetic.
 
 ## v0.5 — Meta-learning
 
