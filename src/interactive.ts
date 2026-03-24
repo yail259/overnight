@@ -437,35 +437,54 @@ export async function runInteractive(config: OvernightConfig, opts: InteractiveO
     baseURL: config.baseUrl || undefined,
   });
 
-  // Auto-refresh stale profile
+  // ── Check for interrupted runs ────────────────────────────────────
+  const { getInterruptedRun } = await import("./executor.js");
+  const interrupted = getInterruptedRun();
+  if (interrupted) {
+    console.log(`\n  ☽ Found an interrupted run: "${interrupted.intent}"`);
+    console.log(`    ${interrupted.results.length} steps completed on branch ${interrupted.branch}`);
+    console.log(`    Use --resume to continue, or start fresh.\n`);
+  }
+
+  // ── Auto-refresh stale profile ──────────────────────────────────
   const profile = loadProfile();
   const profileAge = profile.updatedAt ? Date.now() - new Date(profile.updatedAt).getTime() : Infinity;
   if (profileAge > 24 * 60 * 60 * 1000) {
     const isFirstTime = !profile.updatedAt;
     if (isFirstTime) {
-      console.log("\n  ☽ First time? overnight is building a profile of how you code.");
+      console.log("\n  ☽ Welcome to overnight.\n");
+      console.log("  Building a profile of how you code from your Claude Code sessions.");
       console.log("  This takes ~30s — feel free to grab a coffee.\n");
-      process.stdout.write("  Scanning Claude Code sessions... ");
+      process.stdout.write("  Scanning sessions... ");
     } else {
       process.stdout.write("  ☽ Refreshing your profile... ");
     }
     try {
       await updateProfile(config);
       if (isFirstTime) {
-        console.log("done!");
+        console.log("done!\n");
         const fresh = loadProfile();
         if (fresh.communicationStyle.tone) {
-          console.log(`  Style: ${fresh.communicationStyle.tone}`);
+          console.log(`  Your style: ${fresh.communicationStyle.tone}, ${fresh.communicationStyle.messageLength}`);
+        }
+        if (fresh.codingPatterns.languages.length > 0) {
+          console.log(`  Languages: ${fresh.codingPatterns.languages.join(", ")}`);
         }
         if (fresh.values.length > 0) {
           console.log(`  Values: ${fresh.values.slice(0, 4).join(", ")}`);
         }
-        console.log("");
+        console.log(`\n  overnight now knows how you think. Let's go.\n`);
       } else {
         console.log("done.\n");
       }
     } catch (err: any) {
-      console.log(isFirstTime ? "skipped (no sessions found).\n" : "skipped.\n");
+      if (isFirstTime) {
+        console.log("no Claude Code sessions found yet.\n");
+        console.log("  Use Claude Code for a while first, then run overnight again.");
+        console.log("  overnight reads ~/.claude/projects/ to learn your style.\n");
+      } else {
+        console.log("skipped.\n");
+      }
     }
   }
 

@@ -8,7 +8,7 @@ import { getAllConversationTurns, getConversationSummary } from "./history.js";
 import type { OvernightConfig, UserDirection } from "./types.js";
 import { OVERNIGHT_DIR } from "./types.js";
 import { createClient, extractToolInputs, type ToolDef } from "./api.js";
-import { ContextManager } from "./context.js";
+import { runSandboxedSh } from "./context.js";
 import { execSync } from "child_process";
 
 export const PROFILE_FILE = `${OVERNIGHT_DIR}/profile.json`;
@@ -360,35 +360,30 @@ export async function extractDirection(
   const summary = getConversationSummary(turns);
 
   const client = createClient(config);
-  const ctx = new ContextManager(cwd);
 
-  const READ_TOOL: ToolDef = {
-    name: "read",
-    description: "Read a file or chunk from the workspace to understand the codebase.",
+  const SH_TOOL: ToolDef = {
+    name: "sh",
+    description: "Run a read-only shell command (cat, grep, sed, git, find, etc.)",
     parameters: {
       type: "object",
-      properties: {
-        path: { type: "string", description: "File path relative to workspace root" },
-        offset: { type: "number", description: "Start line (1-indexed, optional)" },
-        limit: { type: "number", description: "Max lines to return (optional)" },
-      },
-      required: ["path"],
+      properties: { command: { type: "string" } },
+      required: ["command"],
     },
   };
 
-  const FORGET_TOOL_DEF: ToolDef = {
+  const FORGET_DEF: ToolDef = {
     name: "forget",
-    description: "Drop a loaded file from memory.",
+    description: "Drop previous tool output from context.",
     parameters: {
       type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
+      properties: { reason: { type: "string" } },
+      required: ["reason"],
     },
   };
 
   const handleTool = (name: string, input: any): string => {
-    if (name === "read") return ctx.read(input.path, input.offset, input.limit);
-    if (name === "forget") return ctx.forget(input.path);
+    if (name === "sh") return runSandboxedSh(input.command, cwd);
+    if (name === "forget") return `Noted: ${input.reason}`;
     return `Unknown tool: ${name}`;
   };
 
@@ -396,8 +391,8 @@ export async function extractDirection(
     model: config.model,
     maxTokens: 2048,
     system: DIRECTION_SYSTEM,
-    prompt: `${getCycleContext(cwd)}\n\n## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Use read to check specific files if needed. Call set_direction.`,
-    tools: [READ_TOOL, FORGET_TOOL_DEF, DIRECTION_TOOL],
+    prompt: `${getCycleContext(cwd)}\n\n## Recent Conversation History (${turns.length} turns)\n${summary}\n\nUse sh to check the codebase if needed. Call set_direction.`,
+    tools: [SH_TOOL, FORGET_DEF, DIRECTION_TOOL],
     outputTools: ["set_direction"],
     handleTool,
     maxTurns: 8,

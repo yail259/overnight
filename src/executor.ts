@@ -15,7 +15,7 @@ import type {
   RunMode,
   AmbitionLevel,
 } from "./types.js";
-import { RUNS_DIR } from "./types.js";
+import { RUNS_DIR, PID_FILE } from "./types.js";
 import { updateProfile, extractDirection } from "./profile.js";
 import { predictNext } from "./predictor.js";
 import { recordRunOutcome } from "./meta-learning.js";
@@ -344,4 +344,110 @@ export function getLatestRun(): OvernightRun | null {
   } catch {
     return null;
   }
+}
+
+/** Detect an interrupted run — status is "running" but no process alive */
+export function getInterruptedRun(): OvernightRun | null {
+  const run = getLatestRun();
+  if (!run || run.status !== "running") return null;
+
+  // Check if PID is still alive
+  try {
+    if (existsSync(PID_FILE)) {
+      const pid = parseInt(readFileSync(PID_FILE, "utf-8").trim(), 10);
+      if (pid) {
+        try {
+          process.kill(pid, 0); // Check if process exists (doesn't actually kill)
+          return null; // Process is alive, not interrupted
+        } catch {
+          // Process is dead — this is an interrupted run
+        }
+      }
+    }
+  } catch {}
+
+  return run;
+}
+
+/** Resume an interrupted run from where it left off */
+export async function resumeRun(
+  run: OvernightRun,
+  config: OvernightConfig,
+  callbacks?: ExecuteCallbacks,
+): Promise<OvernightRun> {
+  const cb = callbacks ?? {};
+  const runFile = join(RUNS_DIR, `${run.id}.json`);
+
+  // Checkout the run branch (should still exist)
+  try {
+    execSync(`git checkout ${run.branch}`, { cwd: run.cwd, stdio: "pipe", timeout: 10_000 });
+  } catch {
+    // If branch doesn't exist, mark as failed
+    run.status = "failed";
+    run.finishedAt = new Date().toISOString();
+    writeFileSync(runFile, JSON.stringify(run, null, 2));
+    return run;
+  }
+
+  // Rebuild adaptive context from completed steps
+  const direction = await extractDirection(run.cwd, config);
+  const adaptiveContext: AdaptiveContext = {
+    completedSteps: run.results.map((r) => ({
+      message: r.message,
+      output: r.output,
+      diff: r.diff,
+      exitCode: r.exitCode,
+      testsPass: r.testsPass,
+      buildPass: r.buildPass,
+    })),
+    mode: run.mode,
+    ambition: "refine",
+    goals: run.predictions.map((p) => p.message),
+    direction,
+  };
+
+  let stepIndex = run.results.length; // Resume from next step
+  const maxSteps = config.maxMessages;
+
+  while (stepIndex < maxSteps) {
+    const current = readRunFile(runFile);
+    if (current?.status === "stopped") { run.status = "stopped"; break; }
+
+    const nextResult = await predictNext(run.intent, run.cwd, config, adaptiveContext);
+    cb.onPrediction?.(nextResult.done ? null : nextResult.prediction!, nextResult.reasoning, stepIndex);
+
+    if (nextResult.done || !nextResult.prediction) break;
+
+    const prediction = nextResult.prediction;
+    run.predictions.push(prediction);
+    cb.onStart?.(prediction, stepIndex);
+
+    const result = await executeMessage(prediction, run.cwd, config, run.branch, stepIndex);
+    run.results.push(result);
+    adaptiveContext.completedSteps.push({
+      message: prediction.message,
+      output: result.output,
+      diff: result.diff,
+      exitCode: result.exitCode,
+      testsPass: result.testsPass,
+      buildPass: result.buildPass,
+    });
+
+    writeFileSync(runFile, JSON.stringify(run, null, 2));
+    cb.onProgress?.(result, stepIndex);
+    stepIndex++;
+
+    if (result.exitCode !== 0 && run.mode === "stick-to-plan") {
+      run.status = "failed";
+      break;
+    }
+  }
+
+  if (run.status === "running") run.status = "completed";
+  run.finishedAt = new Date().toISOString();
+  writeFileSync(runFile, JSON.stringify(run, null, 2));
+  restoreBranch(run.cwd, run.baseBranch);
+  updateProfile(config).catch(() => {});
+  try { recordRunOutcome(run, run.cwd); } catch {}
+  return run;
 }

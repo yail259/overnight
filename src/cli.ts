@@ -93,7 +93,7 @@ const program = new Command();
 program
   .name("overnight")
   .description("another you for when you're asleep — adaptive Claude Code message prediction")
-  .version("0.4.0");
+  .version("0.5.0");
 
 // ── start ────────────────────────────────────────────────────────────
 
