@@ -22,38 +22,15 @@
 - [ ] Wire session browser into --resume CLI flow
 - [ ] User-selectable themes (dracula, solarized, etc.) — future
 
-## v0.5 — Meta-learning
+## v0.5 — Meta-learning ✓
 
-### Merge/discard feedback loop
-overnight predicts → executes → user reviews branch in the morning. What they merge vs discard is gold signal.
-
-- Track run outcomes: which steps got merged, which got discarded/reverted
-- Calibrate prediction confidence against actual merge rates (not model self-assessment)
-- Evolve the profile from "who you are" to "who you are + what works for you overnight"
-- Two developers with identical styles may have very different overnight tolerance — one trusts bold refactors, the other only wants safe test additions
-
-### Cyclical workflow patterns
-Developers don't work linearly — they cycle:
-
-- **Build → test → fix → build** (tight loop within a feature)
-- **Feature → polish → ship → plan next** (weekly rhythm)
-- **Deep work → context switch → deep work** (daily pattern)
-- **Monday energy → Friday cleanup** (weekly pattern)
-
-Session timestamps already contain this signal. overnight should track what kind of work happens when and use temporal context to weight predictions:
-- Thursday night after a feature merge → predict cleanup
-- Monday morning → predict ambitious new work
-- Just shipped? → predict docs, changelog, dependency updates
-
-### Principled yolo prompts
-Current yolo is "think big, don't hold back." Better yolo should be informed by:
-
-- Software design principles (SOLID, separation of concerns, coupling reduction)
-- The project's own architectural patterns (extend them, don't fight them)
-- Technical debt signals (3 different error handling patterns → consolidate)
-- Performance hints (slow tests → parallelization)
-
-Reframe yolo as: "You are a senior engineer doing a design review. What structural improvements have the highest leverage?"
+- [x] Meta-learning engine (src/meta-learning.ts) — tracks run outcomes, merge rates by category/ambition, builds prediction profile
+- [x] Prediction profile fed into predictor prompts (trusted/distrusted categories, confidence calibration)
+- [x] Temporal context in direction extraction (day-of-week, time-of-day, cycle hints)
+- [x] Principled yolo prompts (architectural analysis before ambition — SOLID, coupling, patterns)
+- [x] Full slash command system (/profile, /ambition, /status, /log, /cost, /stop, /diff, /undo)
+- [ ] Auto-record outcomes after run completion (wire into executor)
+- [ ] Periodic outcome scanning (detect merged branches from past runs)
 
 ## v1.0 — Cloud version
 
