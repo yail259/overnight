@@ -8,6 +8,7 @@ import { getAllConversationTurns, getConversationSummary } from "./history.js";
 import type { OvernightConfig, UserDirection } from "./types.js";
 import { OVERNIGHT_DIR } from "./types.js";
 import { createClient, extractToolInputs, type ToolDef } from "./api.js";
+import { ContextManager } from "./context.js";
 import { execSync } from "child_process";
 
 export const PROFILE_FILE = `${OVERNIGHT_DIR}/profile.json`;
@@ -318,6 +319,9 @@ Think about:
   - plan cycle (between features, discussing architecture, exploring)
 
 Do NOT extract specific tasks, TODOs, or action items. Extract the trajectory.
+
+You have \`read\` and \`forget\` tools to check specific files if needed.
+Use them to verify what exists before forming your analysis.
 Call set_direction with your analysis.`;
 
 /** Extract the user's current working direction from recent conversations.
@@ -356,13 +360,47 @@ export async function extractDirection(
   const summary = getConversationSummary(turns);
 
   const client = createClient(config);
+  const ctx = new ContextManager(cwd);
 
-  const results = await client.callWithTools({
+  const READ_TOOL: ToolDef = {
+    name: "read",
+    description: "Read a file or chunk from the workspace to understand the codebase.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path relative to workspace root" },
+        offset: { type: "number", description: "Start line (1-indexed, optional)" },
+        limit: { type: "number", description: "Max lines to return (optional)" },
+      },
+      required: ["path"],
+    },
+  };
+
+  const FORGET_TOOL_DEF: ToolDef = {
+    name: "forget",
+    description: "Drop a loaded file from memory.",
+    parameters: {
+      type: "object",
+      properties: { path: { type: "string" } },
+      required: ["path"],
+    },
+  };
+
+  const handleTool = (name: string, input: any): string => {
+    if (name === "read") return ctx.read(input.path, input.offset, input.limit);
+    if (name === "forget") return ctx.forget(input.path);
+    return `Unknown tool: ${name}`;
+  };
+
+  const results = await client.runToolLoop({
     model: config.model,
     maxTokens: 2048,
     system: DIRECTION_SYSTEM,
-    prompt: `${getCycleContext(cwd)}\n\n## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Use the cycle signals to detect which phase of development they're in. Call set_direction.`,
-    tools: [DIRECTION_TOOL],
+    prompt: `${getCycleContext(cwd)}\n\n## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Use read to check specific files if needed. Call set_direction.`,
+    tools: [READ_TOOL, FORGET_TOOL_DEF, DIRECTION_TOOL],
+    outputTools: ["set_direction"],
+    handleTool,
+    maxTurns: 8,
   });
 
   const directionResults = extractToolInputs<any>(results, "set_direction");

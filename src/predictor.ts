@@ -1,11 +1,16 @@
 /**
- * Adaptive message prediction via the API abstraction layer.
+ * Adaptive message prediction via multi-turn tool loop.
  *
  * Architecture: Model the USER, not the tasks.
  * - User profile (style/tone) → from profile.ts
  * - User direction (current focus area) → from profile.ts extractDirection()
- * - Workspace snapshot (what code actually exists) → from git/filesystem
+ * - Workspace context (what code actually exists) → from context.ts
+ * - Prediction history (what worked before) → from meta-learning.ts
  * - NO raw conversation history in prediction prompts
+ *
+ * The predictor receives a workspace dump (surface-level) and uses `read`
+ * to drill into specific files before making predictions. `forget` drops
+ * loaded content to keep context lean.
  *
  * Three modes:
  * - `predictMessages()` — upfront batch for preview/goals (used by preview_run)
@@ -22,6 +27,7 @@ import type {
   UserDirection,
 } from "./types.js";
 import { createClient, extractToolInputs, type ToolDef } from "./api.js";
+import { ContextManager, generateWorkspaceDump, saveWorkspaceDump } from "./context.js";
 import { getProjectList } from "./history.js";
 import {
   loadProfile,
@@ -30,64 +36,40 @@ import {
   directionToPromptContext,
 } from "./profile.js";
 import { loadPredictionProfile, predictionProfileToPromptContext } from "./meta-learning.js";
-import { execSync } from "child_process";
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// ── Context tools (read/forget) ─────────────────────────────────────
 
-/** Shell command runner with timeout */
-function run(cmd: string, cwd: string): string {
-  try {
-    return execSync(cmd, { cwd, stdio: "pipe", timeout: 5_000 }).toString().trim();
-  } catch {
-    return "";
-  }
-}
+const READ_TOOL: ToolDef = {
+  name: "read",
+  description: "Read a file or chunk from the workspace. Use this to verify what exists before predicting. Returns numbered lines.",
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path relative to workspace root (e.g. 'src/api.ts')" },
+      offset: { type: "number", description: "Start line (1-indexed, optional — default: start of file)" },
+      limit: { type: "number", description: "Max lines to return (optional — default: entire file)" },
+    },
+    required: ["path"],
+  },
+};
 
-/** Capture a rich workspace snapshot — what the developer would SEE when they sit down */
-function getWorkspaceSnapshot(cwd: string): string {
-  const lines: string[] = ["## Workspace State"];
+const FORGET_TOOL: ToolDef = {
+  name: "forget",
+  description: "Drop a previously loaded file from your working memory. Use 'all' to clear everything. Keeps context lean.",
+  parameters: {
+    type: "object",
+    properties: {
+      path: { type: "string", description: "File path to forget, or 'all' to clear everything" },
+    },
+    required: ["path"],
+  },
+};
 
-  const branch = run("git rev-parse --abbrev-ref HEAD", cwd);
-  if (branch) lines.push(`Branch: ${branch}`);
-
-  const commits = run("git log --oneline -10", cwd);
-  if (commits) lines.push(`\nRecent commits:\n${commits}`);
-
-  const status = run("git status --short", cwd);
-  if (status) lines.push(`\nWorking tree:\n${status}`);
-
-  const srcFiles = run(
-    "find src -name '*.ts' -o -name '*.tsx' 2>/dev/null | sort | head -50",
-    cwd
-  );
-  if (srcFiles) lines.push(`\nSource files:\n${srcFiles}`);
-
-  const pkgScripts = run(
-    `node -e "try{const p=require('./package.json');console.log(Object.keys(p.scripts||{}).join(', '))}catch{}" 2>/dev/null`,
-    cwd
-  );
-  if (pkgScripts) lines.push(`\nAvailable scripts: ${pkgScripts}`);
-
-  const readme = run("head -15 README.md 2>/dev/null", cwd);
-  if (readme) lines.push(`\nREADME (first 15 lines):\n${readme}`);
-
-  const recentChanges = run("git diff --stat HEAD~5..HEAD 2>/dev/null", cwd);
-  if (recentChanges) lines.push(`\nRecent changes (last 5 commits):\n${recentChanges}`);
-
-  const testFiles = run(
-    "find . -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' 2>/dev/null | head -10",
-    cwd
-  );
-  if (testFiles) lines.push(`\nTest files:\n${testFiles}`);
-
-  return lines.join("\n");
-}
-
-// ── Tool schemas (provider-agnostic) ─────────────────────────────────
+// ── Output tools ────────────────────────────────────────────────────
 
 const PREDICTION_TOOL: ToolDef = {
   name: "add_prediction",
-  description: "Add a predicted message to send to Claude Code. Call once per message.",
+  description: "Add a predicted message to send to Claude Code. Call once per message. Only call AFTER reading enough files to verify what exists.",
   parameters: {
     type: "object",
     properties: {
@@ -101,7 +83,7 @@ const PREDICTION_TOOL: ToolDef = {
 
 const NEXT_STEP_TOOL: ToolDef = {
   name: "next_step",
-  description: "Predict the single next message to send to Claude Code, or signal that the work is done.",
+  description: "Predict the single next message to send to Claude Code, or signal done. Only call AFTER reading relevant files.",
   parameters: {
     type: "object",
     properties: {
@@ -128,7 +110,7 @@ const NEXT_STEP_TOOL: ToolDef = {
 
 const PLAN_TOOL: ToolDef = {
   name: "suggest_plan",
-  description: "Suggest an overnight plan. Call once per plan.",
+  description: "Suggest an overnight plan. Only call AFTER reading relevant files to verify what exists vs what's needed.",
   parameters: {
     type: "object",
     properties: {
@@ -230,22 +212,30 @@ Rules:
 - Have fun with it`,
 };
 
-// ── System prompt builders (user-model framing) ──────────────────────
+// ── System prompt builders ──────────────────────────────────────────
 
 function getPredictionCtx(): string {
   const predProfile = loadPredictionProfile();
   return predictionProfileToPromptContext(predProfile);
 }
 
+const CONTEXT_INSTRUCTIONS = `
+## Context Tools
+You have access to \`read\` and \`forget\` tools:
+- \`read(path, offset?, limit?)\` — load a file or chunk into your working memory
+- \`forget(path)\` — drop a file from memory when you're done with it
+
+IMPORTANT: Before predicting, USE THESE TOOLS to verify what actually exists.
+Don't predict work that's already done. Read the relevant files first.
+Forget files after checking them to keep your context clean.`;
+
 function buildPredictSystem(
   ambition: AmbitionLevel,
   profileCtx: string,
-  directionCtx: string
+  directionCtx: string,
 ): string {
   const predCtx = getPredictionCtx();
   return `You are a developer sitting down at your computer. You're about to work with Claude Code.
-
-You have a specific style, preferences, and a direction you're heading in. You're going to type messages into Claude Code to get work done tonight.
 
 ${profileCtx}
 
@@ -256,32 +246,37 @@ ${predCtx}
 ## Ambition: ${ambition.toUpperCase()}
 ${AMBITION_PROMPT[ambition]}
 
-## Your Job
-Look at your workspace. Look at your direction. What would you type?
+${CONTEXT_INSTRUCTIONS}
 
-Each message you generate will be sent to Claude Code as a separate session (claude -p). Claude Code starts fresh each time but the branch accumulates changes.
+## Your Job
+1. Look at the workspace dump below (file list, exports, recent commits)
+2. Use \`read\` to check specific files you need to verify
+3. Use \`forget\` to drop files after checking them
+4. Call \`add_prediction\` for each message you'd type — ONLY after verifying what exists
+
+Each message will be sent to Claude Code as a separate session (claude -p). Claude Code starts fresh each time but the branch accumulates changes.
 
 Rules:
-- Type like yourself — match the tone, length, and style in your profile
-- Be specific — you can see the actual files, so reference them by path
+- Type like yourself — match your profile's tone and style
+- Be specific — reference files by path, functions by name
 - Each message should accomplish one logical thing
-- Don't repeat yourself — if a file exists and looks right, move on
-- Ground every message in what you SEE in the workspace, not what you remember from conversations
+- DON'T predict work that's already done — read the files to check
+- Ground every message in what you VERIFY exists, not what you assume
 - Each message is independently executable — include enough context for Claude Code to act
 
-Call add_prediction for each message you'd type. Order from highest-impact to lowest.`;
+Call add_prediction for each message. Order from highest-impact to lowest.`;
 }
 
 function buildAdaptiveSystem(
   ambition: AmbitionLevel,
   mode: "stick-to-plan" | "dont-stop",
   profileCtx: string,
-  directionCtx: string
+  directionCtx: string,
 ): string {
   const modeInstruction =
     mode === "stick-to-plan"
       ? `You are in "Stick to plan" mode. Focus on accomplishing the stated goals. When all goals are met, set done=true.`
-      : `You are in "Don't stop" mode. After primary goals are done, move on to improvements: docs, high-value tests, cleanup, modularity. Only set done=true when there's genuinely nothing valuable left.`;
+      : `You are in "Don't stop" mode. After primary goals are done, move on to improvements: docs, tests, cleanup, modularity. Only set done=true when there's genuinely nothing valuable left.`;
 
   return `You are a developer mid-session. You've been working with Claude Code and you can see what happened so far.
 
@@ -294,24 +289,25 @@ ${modeInstruction}
 ## Ambition: ${ambition.toUpperCase()}
 ${AMBITION_PROMPT[ambition]}
 
+${CONTEXT_INSTRUCTIONS}
+
 ## Your Job
-Look at what happened in the previous steps. Look at the current workspace state. What would you type next?
+1. Look at previous step results AND the current workspace state
+2. Use \`read\` to verify current file state if needed (code may have changed)
+3. Call \`next_step\` with your decision
 
 Rules:
 - React to what actually happened — if something failed, deal with it
 - If tests are broken, fix them before moving on
 - Check the diff — if changes look wrong, course-correct
 - Type like yourself — match your profile's tone and style
-- Be specific — reference files by path, functions by name
-- When you've accomplished what you set out to do, say done
-
-Call next_step with your decision.`;
+- When you've accomplished what you set out to do, say done`;
 }
 
 function buildSuggestSystem(
   ambition: AmbitionLevel,
   profileCtx: string,
-  directionCtx: string
+  directionCtx: string,
 ): string {
   return `You are a developer looking at your projects before bed. You want to figure out what work to delegate overnight.
 
@@ -322,12 +318,30 @@ ${directionCtx}
 ## Ambition: ${ambition.toUpperCase()}
 ${AMBITION_PROMPT[ambition]}
 
+${CONTEXT_INSTRUCTIONS}
+
 ## Your Job
-Look at the workspace state below. Don't suggest things that are already done — check the actual source files and recent commits. Suggest work that aligns with where you're headed.
+1. Look at the workspace dump below
+2. Use \`read\` to check specific files if you need to verify what exists
+3. Don't suggest things that are already done — CHECK FIRST
+4. Call \`suggest_plan\` for each idea (3-5), ordered by impact
 
-Type the plans the way you'd describe them to yourself — match your profile's tone.
+Type the plans the way you'd describe them to yourself — match your profile's tone.`;
+}
 
-Call suggest_plan for each idea (3-5). Order by impact.`;
+// ── Tool handler factory ────────────────────────────────────────────
+
+function createToolHandler(ctx: ContextManager) {
+  return (name: string, input: any): string => {
+    switch (name) {
+      case "read":
+        return ctx.read(input.path, input.offset, input.limit);
+      case "forget":
+        return ctx.forget(input.path);
+      default:
+        return `Unknown tool: ${name}`;
+    }
+  };
 }
 
 // ── Predict messages (batch — used for preview/goals) ────────────────
@@ -336,18 +350,23 @@ export async function predictMessages(
   intent: string,
   cwd: string,
   config: OvernightConfig,
-  ambition: AmbitionLevel = "normal"
+  ambition: AmbitionLevel = "refine",
+  runId?: string,
 ): Promise<PredictedMessage[]> {
   const client = createClient(config);
+  const ctx = new ContextManager(cwd);
 
-  const [direction, profile] = await Promise.all([
+  const [direction, profile, workspace] = await Promise.all([
     extractDirection(cwd, config),
     Promise.resolve(loadProfile()),
+    Promise.resolve(generateWorkspaceDump(cwd)),
   ]);
+
+  // Save workspace dump if we have a run ID
+  if (runId) saveWorkspaceDump(runId, workspace);
 
   const profileCtx = profileToPromptContext(profile);
   const directionCtx = directionToPromptContext(direction);
-  const workspace = getWorkspaceSnapshot(cwd);
 
   const prompt = `## Your Intent Tonight
 "${intent}"
@@ -357,20 +376,22 @@ ${cwd}
 
 ${workspace}
 
-Look at your workspace. Given your direction and this intent, what messages would you type into Claude Code?
-Call add_prediction for each (up to ${config.maxMessages}).`;
+Look at your workspace. Read any files you need to verify state. Then call add_prediction for each message (up to ${config.maxMessages}).`;
 
-  const results = await client.callWithTools({
+  const results = await client.runToolLoop({
     model: config.model,
     maxTokens: 4096,
     system: buildPredictSystem(ambition, profileCtx, directionCtx),
     prompt,
-    tools: [PREDICTION_TOOL],
+    tools: [READ_TOOL, FORGET_TOOL, PREDICTION_TOOL],
+    outputTools: ["add_prediction"],
+    handleTool: createToolHandler(ctx),
+    maxTurns: 15,
   });
 
   return extractToolInputs<PredictedMessage>(results, "add_prediction").slice(
     0,
-    config.maxMessages
+    config.maxMessages,
   );
 }
 
@@ -386,16 +407,18 @@ export async function predictNext(
   intent: string,
   cwd: string,
   config: OvernightConfig,
-  context: AdaptiveContext
+  context: AdaptiveContext,
 ): Promise<NextStepResult> {
   const client = createClient(config);
+  const ctx = new ContextManager(cwd);
 
   const profile = loadProfile();
   const profileCtx = profileToPromptContext(profile);
   const directionCtx = context.direction
     ? directionToPromptContext(context.direction)
     : "";
-  const workspace = getWorkspaceSnapshot(cwd);
+  // Fresh workspace each step — reflects accumulated branch changes
+  const workspace = generateWorkspaceDump(cwd);
 
   let prompt = `## Intent
 "${intent}"
@@ -427,14 +450,17 @@ ${workspace}
     prompt += `## Previous Steps\nNone yet — this is the first step.\n\n`;
   }
 
-  prompt += `Call next_step with either the next message to send, or done=true if the work is complete.`;
+  prompt += `Read any files you need to verify current state, then call next_step.`;
 
-  const results = await client.callWithTools({
+  const results = await client.runToolLoop({
     model: config.model,
     maxTokens: 2048,
     system: buildAdaptiveSystem(context.ambition, context.mode, profileCtx, directionCtx),
     prompt,
-    tools: [NEXT_STEP_TOOL],
+    tools: [READ_TOOL, FORGET_TOOL, NEXT_STEP_TOOL],
+    outputTools: ["next_step"],
+    handleTool: createToolHandler(ctx),
+    maxTurns: 10,
   });
 
   const steps = extractToolInputs<{
@@ -475,17 +501,18 @@ export interface SuggestPlansOptions {
 
 export async function suggestPlans(
   config: OvernightConfig,
-  opts: SuggestPlansOptions = {}
+  opts: SuggestPlansOptions = {},
 ): Promise<SuggestedPlan[]> {
   const client = createClient(config);
-  const ambition = opts.ambition ?? "normal";
+  const ambition = opts.ambition ?? "refine";
   const profile = loadProfile();
   const profileCtx = profileToPromptContext(profile);
 
   if (opts.cwd) {
+    const ctx = new ContextManager(opts.cwd);
     const [direction, workspace] = await Promise.all([
       extractDirection(opts.cwd, config),
-      Promise.resolve(getWorkspaceSnapshot(opts.cwd)),
+      Promise.resolve(generateWorkspaceDump(opts.cwd)),
     ]);
 
     const directionCtx = directionToPromptContext(direction);
@@ -496,15 +523,17 @@ Only suggest plans for this project.
 
 ${workspace}
 
-Look at your workspace and direction. What would be the best uses of overnight work?
-Call suggest_plan for 3-5 plans. Order by impact.`;
+Read any files you need to verify what exists, then call suggest_plan for 3-5 plans.`;
 
-    const results = await client.callWithTools({
+    const results = await client.runToolLoop({
       model: config.model,
       maxTokens: 4096,
       system: buildSuggestSystem(ambition, profileCtx, directionCtx),
       prompt,
-      tools: [PLAN_TOOL],
+      tools: [READ_TOOL, FORGET_TOOL, PLAN_TOOL],
+      outputTools: ["suggest_plan"],
+      handleTool: createToolHandler(ctx),
+      maxTurns: 15,
     });
 
     return extractToolInputs<SuggestedPlan>(results, "suggest_plan");
@@ -524,39 +553,43 @@ Call suggest_plan for 3-5 plans. Order by impact.`;
     topProjects.map(async (p) => {
       const [direction, workspace] = await Promise.all([
         extractDirection(p.cwd, config),
-        Promise.resolve(getWorkspaceSnapshot(p.cwd)),
+        Promise.resolve(generateWorkspaceDump(p.cwd)),
       ]);
       return { project: p, direction, workspace };
-    })
+    }),
   );
 
-  const combinedDirectionCtx = projectContexts
-    .map((ctx) => {
-      const dirCtx = directionToPromptContext(ctx.direction);
-      return `### ${ctx.project.name} (${ctx.project.cwd})\n${dirCtx}\n\n${ctx.workspace}`;
+  const combinedCtx = projectContexts
+    .map((c) => {
+      const dirCtx = directionToPromptContext(c.direction);
+      return `### ${c.project.name} (${c.project.cwd})\n${dirCtx}\n\n${c.workspace}`;
     })
     .join("\n\n---\n\n");
 
-  const primaryDirection = projectContexts[0]?.direction;
-  const primaryDirCtx = primaryDirection
-    ? directionToPromptContext(primaryDirection)
+  const primaryDirCtx = projectContexts[0]?.direction
+    ? directionToPromptContext(projectContexts[0].direction)
     : "";
+
+  // Use first project's cwd for the context manager
+  const ctx = new ContextManager(projectContexts[0]?.project.cwd ?? process.cwd());
 
   const prompt = `## Scope
 Suggest plans across the listed projects. Focus on the most impactful work.
 
 ## Projects
-${combinedDirectionCtx}
+${combinedCtx}
 
-Look at each project's workspace and direction. What would be the best overnight plans?
-Call suggest_plan for 3-5 plans. Order by impact.`;
+Read files from any project if needed, then call suggest_plan for 3-5 plans.`;
 
-  const results = await client.callWithTools({
+  const results = await client.runToolLoop({
     model: config.model,
     maxTokens: 4096,
     system: buildSuggestSystem(ambition, profileCtx, primaryDirCtx),
     prompt,
-    tools: [PLAN_TOOL],
+    tools: [READ_TOOL, FORGET_TOOL, PLAN_TOOL],
+    outputTools: ["suggest_plan"],
+    handleTool: createToolHandler(ctx),
+    maxTurns: 15,
   });
 
   return extractToolInputs<SuggestedPlan>(results, "suggest_plan");

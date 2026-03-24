@@ -19,6 +19,7 @@ import { RUNS_DIR } from "./types.js";
 import { updateProfile, extractDirection } from "./profile.js";
 import { predictNext } from "./predictor.js";
 import { recordRunOutcome } from "./meta-learning.js";
+import { generateWorkspaceDump, saveWorkspaceDump } from "./context.js";
 
 // ── Branch management ────────────────────────────────────────────────
 
@@ -209,6 +210,12 @@ export async function executeAll(
   // Ensure runs directory exists
   mkdirSync(RUNS_DIR, { recursive: true });
   const runFile = join(RUNS_DIR, `${run.id}.json`);
+
+  // Save workspace dump for this run (debugging: "why did it suggest X?")
+  try {
+    const dump = generateWorkspaceDump(run.cwd);
+    saveWorkspaceDump(run.id, dump);
+  } catch {}
 
   // Setup run branch
   setupRunBranch(run.cwd, run.branch);
