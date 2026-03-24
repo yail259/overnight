@@ -209,7 +209,10 @@ function App({
       // Shift+Tab cycles ambition
       if (key.shift && key.tab && !state.selectingProjects) {
         dispatch({ type: "CYCLE_AMBITION" });
-        addToast(`Ambition: ${["safe", "normal", "yolo"][(["safe", "normal", "yolo"].indexOf(state.ambition) + 1) % 3]}`, "info", 1500);
+        const levels = ["tidy", "refine", "build", "radical"];
+        const icons: Record<string, string> = { tidy: "🧹", refine: "🔧", build: "🏗️", radical: "🚀" };
+        const next = levels[(levels.indexOf(state.ambition) + 1) % levels.length];
+        addToast(`${icons[next] ?? ""} ${next}`, next === "radical" ? "warning" : "info", 1500);
         return;
       }
 

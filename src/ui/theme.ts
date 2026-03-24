@@ -59,7 +59,8 @@ export const CHROME = {
 
 /** Ambition level → semantic color */
 export const AMBITION_COLOR: Record<string, string> = {
-  safe: SEMANTIC.accent,
-  normal: TEXT.muted,
-  yolo: SEMANTIC.danger,
+  tidy: TEXT.muted,
+  refine: SEMANTIC.accent,
+  build: SEMANTIC.success,
+  radical: SEMANTIC.danger,
 };

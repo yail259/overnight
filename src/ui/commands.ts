@@ -99,14 +99,20 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "ambition",
     aliases: ["a"],
-    description: "Set ambition: safe, normal, yolo",
+    description: "Set mode: tidy, refine, build, radical",
     handler: (args, dispatch, { addToast }) => {
       const level = args.trim().toLowerCase();
       if (AMBITION_LEVELS.includes(level as AmbitionLevel)) {
         dispatch({ type: "SET_AMBITION", ambition: level as AmbitionLevel });
-        addToast(`Ambition: ${level}`, level === "yolo" ? "warning" : "success", 2000);
+        const labels: Record<string, string> = {
+          tidy: "🧹 Tidy — cleanup only",
+          refine: "🔧 Refine — structural improvement",
+          build: "🏗️ Build — product features",
+          radical: "🚀 Radical — unhinged visionary mode",
+        };
+        addToast(labels[level] ?? level, level === "radical" ? "warning" : "success", 2500);
       } else {
-        addToast(`Usage: /ambition <safe|normal|yolo>`, "warning");
+        addToast(`Usage: /ambition <tidy|refine|build|radical>`, "warning");
       }
     },
   },

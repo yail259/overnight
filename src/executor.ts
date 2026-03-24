@@ -18,6 +18,7 @@ import type {
 import { RUNS_DIR } from "./types.js";
 import { updateProfile, extractDirection } from "./profile.js";
 import { predictNext } from "./predictor.js";
+import { recordRunOutcome } from "./meta-learning.js";
 
 // ── Branch management ────────────────────────────────────────────────
 
@@ -303,6 +304,11 @@ export async function executeAll(
 
   // Auto-update profile after run (fire and forget)
   updateProfile(config).catch(() => {});
+
+  // Record run outcome for meta-learning
+  try {
+    recordRunOutcome(run, run.cwd);
+  } catch {}
 
   return run;
 }

@@ -110,13 +110,14 @@ overnight log                # review what happened overnight
 | **Stick to plan** | One sprint. Accomplish the stated goals, then stop. |
 | **Don't stop** | After primary goals, continue with docs, tests, cleanup. Runs until nothing left or Ctrl+C. |
 
-### Ambition levels
+### Modes
 
-| Level | Risk | What it does |
-|-------|------|-------------|
-| `safe` | Low | Tests, docs, cleanup, finishing near-done work |
-| `normal` | Medium | Natural next steps, pick up where you left off |
-| `yolo` | High | Bold features, refactors, ambitious improvements |
+| Mode | What overnight does |
+|------|-------------|
+| 🧹 `tidy` | Cleanup. Dead code, formatting, small fixes. No functional changes. |
+| 🔧 `refine` | Structural improvement. Design pattern refactors, coupling reduction, test architecture. Same features, better code. |
+| 🏗️ `build` | Product engineering. Derives the next feature from the core business case. Extends what exists toward what it should be. |
+| 🚀 `radical` | Unhinged visionary mode. Bold product ideas nobody asked for but everyone would love. You wake up either delighted or terrified. |
 
 ## Config
 

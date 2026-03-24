@@ -200,19 +200,23 @@
 					</div>
 				</div>
 				<div>
-					<p class="font-mono text-[10px] tracking-[0.2em] uppercase text-cream-faint">Ambition</p>
+					<p class="font-mono text-[10px] tracking-[0.2em] uppercase text-cream-faint">Mode</p>
 					<div class="mt-4 space-y-3">
 						<div>
-							<span class="font-mono text-[13px] text-cream">safe</span>
-							<span class="text-[13px] text-cream-dim"> — tests, docs, cleanup</span>
+							<span class="font-mono text-[13px] text-cream">tidy</span>
+							<span class="text-[13px] text-cream-dim"> — cleanup, dead code, formatting</span>
 						</div>
 						<div>
-							<span class="font-mono text-[13px] text-cream">normal</span>
-							<span class="text-[13px] text-cream-dim"> — natural next steps</span>
+							<span class="font-mono text-[13px] text-cream">refine</span>
+							<span class="text-[13px] text-cream-dim"> — structural improvement, design patterns</span>
 						</div>
 						<div>
-							<span class="font-mono text-[13px] text-cream">yolo</span>
-							<span class="text-[13px] text-cream-dim"> — bold refactors, new features</span>
+							<span class="font-mono text-[13px] text-cream">build</span>
+							<span class="text-[13px] text-cream-dim"> — derive next features from business case</span>
+						</div>
+						<div>
+							<span class="font-mono text-[13px] text-cream">radical</span>
+							<span class="text-[13px] text-cream-dim"> — unhinged visionary. wake up delighted or terrified</span>
 						</div>
 					</div>
 				</div>
@@ -243,7 +247,7 @@
 					<p class="mt-4 text-cream-dim">Suggested plan:</p>
 					<p class="text-cream ml-2">"The executor has no retry logic and the error types are</p>
 					<p class="text-cream ml-2"> incomplete. Want me to finish it tonight?"</p>
-					<p class="mt-4 text-cream-faint">Ambition: <span class="text-cream">normal</span> &nbsp;Mode: <span class="text-cream">stick to plan</span></p>
+					<p class="mt-4 text-cream-faint">Mode: <span class="text-cream">🔧 refine</span> &nbsp;Run: <span class="text-cream">stick to plan</span></p>
 					<p class="mt-4 text-signal">&#9656; Starting run <span class="text-cream">overnight/run-a7f3</span></p>
 					<p class="mt-2"><span class="text-signal">&#10003;</span> <span class="text-cream-faint">1</span> <span class="text-cream">Add ExecutorError type + wrap stream calls</span></p>
 					<p><span class="text-signal">&#10003;</span> <span class="text-cream-faint">2</span> <span class="text-cream">Add exponential backoff — max 3 retries</span></p>

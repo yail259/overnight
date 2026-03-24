@@ -1,7 +1,7 @@
-/** Ambition level for plan suggestions */
-export type AmbitionLevel = "safe" | "normal" | "yolo";
+/** Ambition level — what kind of work overnight does */
+export type AmbitionLevel = "tidy" | "refine" | "build" | "radical";
 
-export const AMBITION_LEVELS: AmbitionLevel[] = ["safe", "normal", "yolo"];
+export const AMBITION_LEVELS: AmbitionLevel[] = ["tidy", "refine", "build", "radical"];
 
 /** Run mode — stick to plan (one sprint) or don't stop (continuous) */
 export type RunMode = "stick-to-plan" | "dont-stop";

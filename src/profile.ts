@@ -251,26 +251,50 @@ const DIRECTION_TOOL: ToolDef = {
   },
 };
 
-/** Get temporal context — day of week, time of day, recent rhythm */
-function getTemporalContext(): string {
-  const now = new Date();
-  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-  const day = days[now.getDay()];
-  const hour = now.getHours();
+/** Get conceptual cycle context from git state — not wall clock, actual development phase */
+function getCycleContext(cwd: string): string {
+  const lines: string[] = ["## Development Cycle Signals"];
 
-  let timeOfDay = "morning";
-  if (hour >= 12 && hour < 17) timeOfDay = "afternoon";
-  if (hour >= 17 && hour < 21) timeOfDay = "evening";
-  if (hour >= 21 || hour < 5) timeOfDay = "night";
+  try {
+    // Recent merge commits → just shipped something (post-ship phase)
+    const merges = execSync("git log --merges --oneline -3 2>/dev/null", { cwd, stdio: "pipe", timeout: 5_000 }).toString().trim();
+    if (merges) {
+      const firstMerge = merges.split("\n")[0];
+      lines.push(`Recent merges: ${firstMerge}`);
+    }
 
-  let workPhaseHint = "";
-  if (day === "Monday") workPhaseHint = "Start of week — typically high-energy, good for ambitious work.";
-  else if (day === "Friday") workPhaseHint = "End of week — often cleanup, docs, tying loose ends.";
-  else if (day === "Saturday" || day === "Sunday") workPhaseHint = "Weekend — often side projects, exploration, or catching up.";
+    // Working tree state → what phase are they in?
+    const status = execSync("git status --short 2>/dev/null", { cwd, stdio: "pipe", timeout: 5_000 }).toString().trim();
+    if (!status) {
+      lines.push("Clean working tree — between tasks, ready for new work.");
+    } else {
+      const changedFiles = status.split("\n").length;
+      lines.push(`Working tree: ${changedFiles} changed files — mid-task.`);
+    }
 
-  if (timeOfDay === "night") workPhaseHint += " Late night session — user is likely wrapping up or delegating to overnight.";
+    // Commit frequency → iteration speed
+    const recentCommits = execSync("git log --oneline -10 --format='%ar' 2>/dev/null", { cwd, stdio: "pipe", timeout: 5_000 }).toString().trim();
+    const commitLines = recentCommits.split("\n").filter(Boolean);
+    if (commitLines.length > 0) {
+      lines.push(`Recent commit pace: ${commitLines[0]} (latest), ${commitLines.length} in recent history`);
+    }
 
-  return `Time: ${day} ${timeOfDay} (${hour}:00)\n${workPhaseHint}`.trim();
+    // Branch state → feature branch vs main
+    const branch = execSync("git rev-parse --abbrev-ref HEAD 2>/dev/null", { cwd, stdio: "pipe", timeout: 5_000 }).toString().trim();
+    if (branch && branch !== "main" && branch !== "master") {
+      lines.push(`On feature branch: ${branch} — likely mid-feature.`);
+    } else {
+      lines.push(`On main branch — between features or doing maintenance.`);
+    }
+
+    // Test state → are things passing?
+    const hasTests = execSync("find . -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' 2>/dev/null | head -1", { cwd, stdio: "pipe", timeout: 5_000 }).toString().trim();
+    if (hasTests) {
+      lines.push("Test files exist — test health is a signal.");
+    }
+  } catch {}
+
+  return lines.join("\n");
 }
 
 const DIRECTION_SYSTEM = `You are analyzing a developer's recent Claude Code conversations to understand their DIRECTION — where they're headed, not what they need to do.
@@ -287,7 +311,11 @@ Think about:
 - What THEMES keep coming up? (patterns they're pursuing across multiple changes)
 - What TENSIONS exist? (what seems to bother them, what do they keep coming back to?)
 - What's the MOMENTUM? (what's active vs settling down?)
-- What CYCLE are they in? (build→test→fix? feature→polish→ship? Consider the time/day context)
+- What CYCLE are they in? Detect from git state and conversation content:
+  - build cycle (new code, feature branch, lots of additions)
+  - fix cycle (debugging, test failures, small targeted changes)
+  - ship cycle (clean tree, recent merges, polishing)
+  - plan cycle (between features, discussing architecture, exploring)
 
 Do NOT extract specific tasks, TODOs, or action items. Extract the trajectory.
 Call set_direction with your analysis.`;
@@ -333,7 +361,7 @@ export async function extractDirection(
     model: config.model,
     maxTokens: 2048,
     system: DIRECTION_SYSTEM,
-    prompt: `## Temporal Context\n${getTemporalContext()}\n\n## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Consider the temporal context for cycle detection. Call set_direction.`,
+    prompt: `${getCycleContext(cwd)}\n\n## Recent Conversation History (${turns.length} turns)\n${summary}\n\nExtract the developer's current direction. Use the cycle signals to detect which phase of development they're in. Call set_direction.`,
     tools: [DIRECTION_TOOL],
   });
 
